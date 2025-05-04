@@ -162,18 +162,18 @@ class DataLoader:
         hate_xplain = hate_xplain[hate_xplain["text"].str.strip() != ""]
 
         # Load TUKE Slovak dataset
-        tuke_sk_splits = {"train": "train.json", "test": "test.json"}
-        tuke_sk_df = pd.read_json(
-            "hf://datasets/TUKE-KEMT/hate_speech_slovak/" + tuke_sk_splits["test"],
+        hate_speech_slovak_splits = {"train": "train.json", "test": "test.json"}
+        hate_speech_slovak = pd.read_json(
+            "hf://datasets/TUKE-KEMT/hate_speech_slovak/" + hate_speech_slovak_splits["test"],
             lines=True,
         )
-        tuke_sk_df = tuke_sk_df.rename(columns={"text": "text"})
-        tuke_sk_df = tuke_sk_df[tuke_sk_df["label"] == 0]
-        tuke_sk_df["label"] = 3
-        tuke_sk_df["domain"] = "ood"
-        tuke_sk_df = tuke_sk_df[["text", "label", "domain"]]
-        tuke_sk_df = tuke_sk_df.dropna(subset=["text"])
-        tuke_sk_df = tuke_sk_df[tuke_sk_df["text"].str.strip() != ""]
+        hate_speech_slovak = hate_speech_slovak.rename(columns={"text": "text"})
+        hate_speech_slovak = hate_speech_slovak[hate_speech_slovak["label"] == 0]
+        hate_speech_slovak["label"] = 3
+        hate_speech_slovak["domain"] = "ood"
+        hate_speech_slovak = hate_speech_slovak[["text", "label", "domain"]]
+        hate_speech_slovak = hate_speech_slovak.dropna(subset=["text"])
+        hate_speech_slovak = hate_speech_slovak[hate_speech_slovak["text"].str.strip() != ""]
 
         try:
             splits = {'train': 'data/train-00000-of-00001.parquet', 'test': 'data/test-00000-of-00001.parquet'}
@@ -219,7 +219,7 @@ class DataLoader:
             "jigsaw": jigsaw_df,
             "olid": olid_df,
             "hate_xplain": hate_xplain,
-            "tuke_sk": tuke_sk_df,
+            "hate_speech_slovak ": hate_speech_slovak,
             "dkhate": dkhate,
             "web_questions": web_questions,
             "ml_questions": ml_questions,
