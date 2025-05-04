@@ -7,7 +7,6 @@ A benchmark and evaluation toolkit for developing and testing guarded query rout
 ## Installation
 
 ```bash
-# Clone the repository
 pip install gqr
 ```
 
