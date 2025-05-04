@@ -64,6 +64,19 @@ dataset_results = gqr.evaluate_by_dataset(
 )
 ```
 
+## Contributing
+
+```
+git clone git@github.com:williambrach/gqr.git
+```
+
+```
+uv venv --python 3.12
+```
+
+```
+uv sync 
+```
 
 ## Paper and Citations
 
