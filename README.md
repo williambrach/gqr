@@ -24,6 +24,15 @@ train_data, eval_data = gqr.load_train_dataset()
 # Load test datasets for final evaluation
 domain_test_data = gqr.load_id_test_dataset()  # In-domain test data
 ood_test_data = gqr.load_ood_test_dataset()    # Out-of-domain test data
+
+# Score the model on gqr-bench
+def scoring_function(text: str) -> int:
+    # Scoring function takes text input (str) and returns predicted domain label (int)
+    # Implement your classification logic here
+    return 0  # Replace with actual domain prediction
+
+# Evaluate model performance
+score = gqr.score(scoring_function)
 ```
 
 ## Domain Labels
@@ -36,32 +45,18 @@ print(gqr.label2domain)  # Maps numerical labels to domain names
 print(gqr.domain2label)  # Maps domain names to numerical labels
 ```
 
-## Evaluation
-
-**Important**: When using the `evaluate` functions, ensure that the prediction and ground truth values are strings, not numerical labels.
-The module offers comprehensive evaluation functions:
+## Score
 
 ```python
-# Evaluate on in-domain test set
+import gqr
 
-results = gqr.evaluate(
-    predictions=pred_id_labels,
-    ground_truth=true_id_labels
-)
+def scoring_function(text: str) -> int:
+    # Scoring function takes text input (str) and returns predicted domain label (int)
+    # Implement your classification logic here
+    return 0  # Replace with actual domain prediction
 
-# Evaluate on out-of-domain test set
-ood_results = gqr.evaluate(
-    predictions=pred_ood_labels,
-    ground_truth=true_ood_labels
-)
-
-# Evaluate by dataset (grouped evaluation)
-dataset_results = gqr.evaluate_by_dataset(
-    ood_test_data,
-    pred_col='pred',
-    true_col='true',
-    dataset_col='dataset'
-)
+# Evaluate model performance
+score = gqr.score(scoring_function)
 ```
 
 ## Contributing

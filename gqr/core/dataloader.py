@@ -15,7 +15,8 @@ label2domain = {
     3: "ood",
 }
 
-domain2label = {value : key for key, value in label2domain.items()}
+domain2label = {value: key for key, value in label2domain.items()}
+
 
 class DataLoader:
     """Handles dataset loading for the GQRBench package."""
@@ -32,7 +33,9 @@ class DataLoader:
         """
         law_dataset = load_dataset("dim/law_stackexchange_prompts")
         finance_dataset = load_dataset("4DR1455/finance_questions")
-        healthcare_dataset = load_dataset("iecjsu/lavita-ChatDoctor-HealthCareMagic-100k")
+        healthcare_dataset = load_dataset(
+            "iecjsu/lavita-ChatDoctor-HealthCareMagic-100k"
+        )
 
         keep = ["text", "domain", "label"]
 
@@ -60,7 +63,11 @@ class DataLoader:
             .filter(lambda x: all(v is not None for v in x.values()))
             .select(range(min(DATASET_SIZE, len(finance_dataset["train"]))))
             .map(
-                lambda x: {"text": str(x["instruction"]), "domain": "finance", "label": 1},
+                lambda x: {
+                    "text": str(x["instruction"]),
+                    "domain": "finance",
+                    "label": 1,
+                },
                 remove_columns=[
                     c for c in finance_dataset["train"].column_names if c not in keep
                 ],
@@ -70,7 +77,9 @@ class DataLoader:
         # Filter and prepare healthcare dataset
         healthcare_data = (
             healthcare_dataset["train"]
-            .filter(lambda x: x["input"] is not None and len(str(x["input"]).strip()) > 0)
+            .filter(
+                lambda x: x["input"] is not None and len(str(x["input"]).strip()) > 0
+            )
             .filter(lambda x: all(v is not None for v in x.values()))
             .select(range(min(DATASET_SIZE, len(healthcare_dataset["train"]))))
             .map(
@@ -82,7 +91,9 @@ class DataLoader:
         )
 
         # Concatenate datasets
-        combined_dataset = concatenate_datasets([law_data, finance_data, healthcare_data])
+        combined_dataset = concatenate_datasets(
+            [law_data, finance_data, healthcare_data]
+        )
 
         # Split into train and test sets using dataset's train_test_split method
         data = combined_dataset.train_test_split(test_size=TRAIN_SPLIT, seed=SEED)
@@ -92,7 +103,9 @@ class DataLoader:
         train_dataset = data["train"].to_pandas()
 
         # shiffle the train dataset
-        train_dataset = train_dataset.sample(frac=1, random_state=SEED).reset_index(drop=True)
+        train_dataset = train_dataset.sample(frac=1, random_state=SEED).reset_index(
+            drop=True
+        )
 
         train_dataset, eval_dataset = train_test_split(
             train_dataset,
@@ -102,7 +115,6 @@ class DataLoader:
         )
 
         return train_dataset, eval_dataset, test_dataset
-
 
     @staticmethod
     def load_ood_test_dataset() -> pd.DataFrame:
@@ -141,10 +153,12 @@ class DataLoader:
 
         # Load OLID dataset
         olid_splits = {"train": "train.csv", "test": "test.csv"}
-        olid_df = pd.read_csv("hf://datasets/christophsonntag/OLID/" + olid_splits["test"])
+        olid_df = pd.read_csv(
+            "hf://datasets/christophsonntag/OLID/" + olid_splits["test"]
+        )
         olid_df = olid_df.rename(columns={"cleaned_tweet": "text"})
         olid_df["label"] = 3
-        olid_df['domain'] = 'ood'
+        olid_df["domain"] = "ood"
         olid_df = olid_df[["text", "label", "domain"]]
         olid_df = olid_df.dropna(subset=["text"])
         olid_df = olid_df[olid_df["text"].str.strip() != ""]
@@ -164,7 +178,8 @@ class DataLoader:
         # Load TUKE Slovak dataset
         hate_speech_slovak_splits = {"train": "train.json", "test": "test.json"}
         hate_speech_slovak = pd.read_json(
-            "hf://datasets/TUKE-KEMT/hate_speech_slovak/" + hate_speech_slovak_splits["test"],
+            "hf://datasets/TUKE-KEMT/hate_speech_slovak/"
+            + hate_speech_slovak_splits["test"],
             lines=True,
         )
         hate_speech_slovak = hate_speech_slovak.rename(columns={"text": "text"})
@@ -173,10 +188,15 @@ class DataLoader:
         hate_speech_slovak["domain"] = "ood"
         hate_speech_slovak = hate_speech_slovak[["text", "label", "domain"]]
         hate_speech_slovak = hate_speech_slovak.dropna(subset=["text"])
-        hate_speech_slovak = hate_speech_slovak[hate_speech_slovak["text"].str.strip() != ""]
+        hate_speech_slovak = hate_speech_slovak[
+            hate_speech_slovak["text"].str.strip() != ""
+        ]
 
         try:
-            splits = {'train': 'data/train-00000-of-00001.parquet', 'test': 'data/test-00000-of-00001.parquet'}
+            splits = {
+                "train": "data/train-00000-of-00001.parquet",
+                "test": "data/test-00000-of-00001.parquet",
+            }
             dkhate = pd.read_parquet("hf://datasets/DDSC/dkhate/" + splits["test"])
             dkhate["label"] = 3
             dkhate["domain"] = "ood"
@@ -185,35 +205,43 @@ class DataLoader:
         except Exception as e:
             instructions = [
                 "Cannot load dkhate dataset. Skipping it.",
-                "Error details:"
-                "```"
-                f"{str(e)}",
+                "Error details:" "```" f"{str(e)}",
                 "```",
                 "Please check if you are logged in to Hugging Face Hub.",
                 "You can do this by running `huggingface-cli login` in your terminal.",
-                "Ensure you have access to the dataset: https://huggingface.co/datasets/DDSC/dkhate"
+                "Ensure you have access to the dataset: https://huggingface.co/datasets/DDSC/dkhate",
             ]
             for instruction in instructions:
                 print(instruction)
             dkhate = pd.DataFrame(columns=["text", "label", "domain"])
 
-        splits = {'train': 'data/train-00000-of-00001.parquet', 'test': 'data/test-00000-of-00001.parquet'}
-        web_questions = pd.read_parquet("hf://datasets/Stanford/web_questions/" + splits["test"])
+        splits = {
+            "train": "data/train-00000-of-00001.parquet",
+            "test": "data/test-00000-of-00001.parquet",
+        }
+        web_questions = pd.read_parquet(
+            "hf://datasets/Stanford/web_questions/" + splits["test"]
+        )
 
-        web_questions['text'] = web_questions['question']
-        web_questions['label'] = 3
-        web_questions['domain'] = 'ood'
-        web_questions['dataset'] = 'web_questions'
-        web_questions = web_questions[['text', 'label', 'domain']]
+        web_questions["text"] = web_questions["question"]
+        web_questions["label"] = 3
+        web_questions["domain"] = "ood"
+        web_questions["dataset"] = "web_questions"
+        web_questions = web_questions[["text", "label", "domain"]]
 
-        splits = {'train': 'data/train-00000-of-00001-7ebb9cdef03dd950.parquet', 'test': 'data/test-00000-of-00001-fbd3905b045b12b8.parquet'}
-        ml_questions = pd.read_parquet("hf://datasets/mjphayes/machine_learning_questions/" + splits["test"])
+        splits = {
+            "train": "data/train-00000-of-00001-7ebb9cdef03dd950.parquet",
+            "test": "data/test-00000-of-00001-fbd3905b045b12b8.parquet",
+        }
+        ml_questions = pd.read_parquet(
+            "hf://datasets/mjphayes/machine_learning_questions/" + splits["test"]
+        )
 
-        ml_questions['text'] = ml_questions['question']
-        ml_questions['label'] = 3
-        ml_questions['domain'] = 'ood'
-        ml_questions['dataset'] = 'machine_learning_questions'
-        ml_questions = ml_questions[['text', 'label', 'domain']]
+        ml_questions["text"] = ml_questions["question"]
+        ml_questions["label"] = 3
+        ml_questions["domain"] = "ood"
+        ml_questions["dataset"] = "machine_learning_questions"
+        ml_questions = ml_questions[["text", "label", "domain"]]
 
         ood_datasets = {
             "jigsaw": jigsaw_df,
@@ -236,7 +264,10 @@ def load_train_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def load_dev_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
     train_dataset, eval_dataset, _ = DataLoader.load_train_dataset()
-    return train_dataset.sample(DEV_SIZE, random_state=SEED), eval_dataset.sample(DEV_SIZE, random_state=SEED),
+    return (
+        train_dataset.sample(DEV_SIZE, random_state=SEED),
+        eval_dataset.sample(DEV_SIZE, random_state=SEED),
+    )
 
 
 def load_id_test_dataset() -> pd.DataFrame:
@@ -253,4 +284,3 @@ def load_ood_test_dataset() -> pd.DataFrame:
         dataset["dataset"] = key
         data.append(dataset)
     return pd.concat(data).reset_index(drop=True)
-

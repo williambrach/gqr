@@ -1,5 +1,4 @@
 from typing import Union
-from collections.abc import Callable
 
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
@@ -32,7 +31,7 @@ class Evaluator:
             true_labels, predicted_labels, average="weighted", zero_division=0
         )
         recall = recall_score(
-                true_labels, predicted_labels, average="weighted", zero_division=0
+            true_labels, predicted_labels, average="weighted", zero_division=0
         )
         f1 = f1_score(
             true_labels, predicted_labels, average="weighted", zero_division=0
@@ -47,7 +46,10 @@ class Evaluator:
 
     @staticmethod
     def evaluate_ood(
-        df : pd.DataFrame, pred_col : str = "pred", true_col : str = "label", dataset_col : str = "dataset"
+        df: pd.DataFrame,
+        pred_col: str = "pred",
+        true_col: str = "label",
+        dataset_col: str = "dataset",
     ) -> dict[str, float]:
         """
         Evaluate predictions on the out-of-distribution test set.
@@ -70,11 +72,10 @@ class Evaluator:
                 predicted_labels=predicted_labels,
                 true_labels=true_labels,
             )
-            scores['dataset'] = dataset
+            scores["dataset"] = dataset
             results.append(scores)
         results = pd.DataFrame(results)
         return results
-
 
 
 def evaluate(
@@ -86,43 +87,12 @@ def evaluate(
 
 
 def evaluate_by_dataset(
-    data : pd.DataFrame, pred_col : str = "pred", true_col : str = "label", dataset_col : str = "dataset"
+    data: pd.DataFrame,
+    pred_col: str = "pred",
+    true_col: str = "label",
+    dataset_col: str = "dataset",
 ) -> dict[str, float]:
     """Convenience function for Evaluator.evaluate_ood()"""
-    return Evaluator.evaluate_ood(df=data, pred_col=pred_col, true_col=true_col, dataset_col=dataset_col)
-
-
-
-def score(model_fn: Callable[[str], int]) -> dict:
-    """ 
-    model_fn should be a callable that takes a string and returns a class label in {0, 1, 2, 3},
-    where 3 is the out-of-distribution class and 0, 1, 2 correspond to the three
-    target domains: law, finance, and health, respectively.
-    """
-    print("[GQR-Score] Loading ID test dataset...")
-    id_test_data = gqr.load_id_test_dataset()
-    print("[GQR-Score] Running model on ID test dataset...")
-    id_test_data["predictions"] = [model_fn(doc) for doc in id_test_data["text"].values]
-    id_scores = gqr.evaluate(id_test_data["predictions"], ground_truth=id_test_data["label"])
-    print("[GQR-Score] ID scores: ", id_scores)
-
-    print("[GQR-Score] Loading ID test dataset...")
-    ood_test_data = gqr.load_ood_test_dataset()
-    print("[GQR-Score] Running model on OOD test dataset...")
-    ood_test_data["predictions"] = [model_fn(doc) for doc in ood_test_data["text"].values]
-    ood_scores_df = gqr.evaluate_by_dataset(ood_test_data, pred_col="predictions", true_col="label", dataset_col="dataset")
-    print("[GQR-Score] OOD scores:", ood_scores_df, sep='\n')
-
-    id_accuracy = id_scores["accuracy"]
-    mean_ood_accuracy = ood_scores_df['accuracy'].mean()
-
-    gqr_score =  2 * (id_accuracy * mean_ood_accuracy) / (id_accuracy + mean_ood_accuracy)
-
-    scores = {
-        "id_accuracy": id_accuracy,
-        "ood_accuracy": mean_ood_accuracy,
-        "gqr_score": gqr_score,
-    }
-    print("[GQR-Score] Final scores: ", scores)
-
-    return scores
+    return Evaluator.evaluate_ood(
+        df=data, pred_col=pred_col, true_col=true_col, dataset_col=dataset_col
+    )
