@@ -22,7 +22,7 @@ class DataLoader:
     """Handles dataset loading for the GQRBench package."""
 
     @staticmethod
-    def load_train_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
+    def load_train_dataset() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Load the training dataset.
 
@@ -38,6 +38,7 @@ class DataLoader:
         )
 
         keep = ["text", "domain", "label"]
+
 
         # Filter and prepare law dataset
         law_data = (
@@ -117,7 +118,7 @@ class DataLoader:
         return train_dataset, eval_dataset, test_dataset
 
     @staticmethod
-    def load_ood_test_dataset() -> pd.DataFrame:
+    def load_ood_test_dataset() -> dict[str,pd.DataFrame]:
         """
         Load the out-of-distribution test dataset.
 
@@ -176,12 +177,9 @@ class DataLoader:
         hate_xplain = hate_xplain[hate_xplain["text"].str.strip() != ""]
 
         # Load TUKE Slovak dataset
-        hate_speech_slovak_splits = {"train": "train.json", "test": "test.json"}
-        hate_speech_slovak = pd.read_json(
-            "hf://datasets/TUKE-KEMT/hate_speech_slovak/"
-            + hate_speech_slovak_splits["test"],
-            lines=True,
-        )
+        hate_speech_slovak = load_dataset("TUKE-KEMT/hate_speech_slovak", split="test")
+        # The library returns a Dataset object, which you can easily convert to a pandas DataFrame
+        hate_speech_slovak = hate_speech_slovak.to_pandas()
         hate_speech_slovak = hate_speech_slovak.rename(columns={"text": "text"})
         hate_speech_slovak = hate_speech_slovak[hate_speech_slovak["label"] == 0]
         hate_speech_slovak["label"] = 3

@@ -1,9 +1,9 @@
 [project]
 name = "gqr"
-version = "0.0.4"
+version = "0.0.5a"
 description = "Package for Guarded Query Routing Benchmark (GQR-Bench)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "datasets>=3.5.1",
     "pandas>=2.2.3",

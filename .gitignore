@@ -6,6 +6,7 @@ token
 # C extensions
 *.so
 main.py
+.DS_Store
 # Distribution / packaging
 .Python
 build/

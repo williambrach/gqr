@@ -50,7 +50,7 @@ class Evaluator:
         pred_col: str = "pred",
         true_col: str = "label",
         dataset_col: str = "dataset",
-    ) -> dict[str, float]:
+    ) -> pd.DataFrame:
         """
         Evaluate predictions on the out-of-distribution test set.
         Automatically loads the OOD test set for evaluation.
@@ -60,7 +60,7 @@ class Evaluator:
             metrics: list of metrics to compute. If None, computes all available metrics.
 
         Returns:
-            dict[str, float]: dictionary mapping metric names to scores
+            pd.DataFrame: DataFrame mapping metric names to scores
         """
 
         results = []
@@ -91,7 +91,7 @@ def evaluate_by_dataset(
     pred_col: str = "pred",
     true_col: str = "label",
     dataset_col: str = "dataset",
-) -> dict[str, float]:
+) -> pd.DataFrame:
     """Convenience function for Evaluator.evaluate_ood()"""
     return Evaluator.evaluate_ood(
         df=data, pred_col=pred_col, true_col=true_col, dataset_col=dataset_col
