@@ -78,6 +78,15 @@ uv sync
 If you use GQR-Bench in your research, please cite our paper:
 
 ```
+@misc{šléher2025guardedqueryroutinglarge,
+      title={Guarded Query Routing for Large Language Models}, 
+      author={Richard Šléher and William Brach and Tibor Sloboda and Kristián Košťál and Lukas Galke},
+      year={2025},
+      eprint={2505.14524},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2505.14524}, 
+}
 ```
 
 
