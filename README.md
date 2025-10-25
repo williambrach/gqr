@@ -2,8 +2,6 @@
 
 A benchmark and evaluation toolkit for developing and testing guarded query routing models for AI systems.
 
-
-
 ## Installation
 
 ```bash
@@ -78,9 +76,12 @@ uv sync
 If you use GQR-Bench in your research, please cite our paper:
 
 ```
+@incollection{gqrbench2025,
+      title={Guarded Query Routing for Large Language Models}, 
+      author={Richard Šléher and William Brach and Tibor Sloboda and Kristián Košťál and Lukas Galke},
+      booktitle={ECAI 2025},
+      year={2025},
+      pages={4129-4136},
+      publisher={IOS Press}
+}
 ```
-
-
-## Contributing
-
-Contributions to GQR-Bench are welcome! Please feel free to submit a Pull Request with improvements, additional evaluation metrics, or dataset enhancements.
