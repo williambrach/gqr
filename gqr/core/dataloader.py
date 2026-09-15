@@ -8,6 +8,15 @@ DEV_SIZE = 1_000
 
 SEED = 42
 
+# `4DR1455/finance_questions` (the original finance source) was removed from the
+# Hugging Face Hub. It was a re-upload of the dataset below with an extra empty
+# `input` column; the first 15 000 filtered instructions are identical, so the
+# benchmark splits are unchanged.
+FINANCE_SOURCE = "DeividasM/financial-instruction-aq22"
+WEB_QUESTIONS_SOURCE = "hf://datasets/stanfordnlp/web_questions/"
+
+VERSIONS = ("v1", "v2")
+
 label2domain = {
     0: "law",
     1: "finance",
@@ -32,7 +41,7 @@ class DataLoader:
                 - eval: DataFrame containing evaluation examples
         """
         law_dataset = load_dataset("dim/law_stackexchange_prompts")
-        finance_dataset = load_dataset("4DR1455/finance_questions")
+        finance_dataset = load_dataset(FINANCE_SOURCE)
         healthcare_dataset = load_dataset(
             "iecjsu/lavita-ChatDoctor-HealthCareMagic-100k"
         )
@@ -218,7 +227,7 @@ class DataLoader:
             "test": "data/test-00000-of-00001.parquet",
         }
         web_questions = pd.read_parquet(
-            "hf://datasets/Stanford/web_questions/" + splits["test"]
+            WEB_QUESTIONS_SOURCE + splits["test"]
         )
 
         web_questions["text"] = web_questions["question"]
@@ -254,14 +263,32 @@ class DataLoader:
         return ood_datasets
 
 
-def load_train_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Convenience function for DataLoader.load_train_dataset()"""
+def _check_version(version: str) -> None:
+    if version not in VERSIONS:
+        raise ValueError(
+            f"Unknown GQR-Bench version {version!r}; expected one of {VERSIONS}"
+        )
+
+
+def load_train_dataset(version: str = "v1") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load the train and eval splits.
+
+    version="v1": the three in-distribution domains only (original GQR-Bench).
+    version="v2": v1 plus a fourth *background* class (label 3, domain "ood")
+    built from general-purpose corpora disjoint from every test set; see
+    `gqr.core.background`. Test sets are identical in both versions.
+    """
+    _check_version(version)
+    if version == "v2":
+        from .background import load_train_dataset_v2
+
+        return load_train_dataset_v2()
     train_dataset, eval_dataset, _ = DataLoader.load_train_dataset()
     return train_dataset, eval_dataset
 
 
-def load_dev_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_dataset, eval_dataset, _ = DataLoader.load_train_dataset()
+def load_dev_dataset(version: str = "v1") -> tuple[pd.DataFrame, pd.DataFrame]:
+    train_dataset, eval_dataset = load_train_dataset(version)
     return (
         train_dataset.sample(DEV_SIZE, random_state=SEED),
         eval_dataset.sample(DEV_SIZE, random_state=SEED),

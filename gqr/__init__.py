@@ -1,6 +1,8 @@
 from collections.abc import Callable
 
+from .core.background import load_background_dataset
 from .core.dataloader import (
+    VERSIONS,
     DataLoader,
     domain2label,
     label2domain,
