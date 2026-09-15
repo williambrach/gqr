@@ -4,7 +4,7 @@ GQR-Bench v1 ships training data for the three in-distribution domains only, so
 a router can learn to reject out-of-distribution queries only indirectly (for
 example by thresholding confidence). v2 adds a fourth *background* class
 (label 3, domain "ood") to the train and eval splits. It is built only from
-general-purpose corpora that are disjoint from every GQR-Bench test set:
+general-purpose corpora, at pinned revisions, that no GQR-Bench test set uses:
 
 * wikitext-103 prose (``Salesforce/wikitext``, ``wikitext-103-raw-v1``, train)
 * dolly-15k instructions (``databricks/databricks-dolly-15k``, train)
@@ -12,13 +12,16 @@ general-purpose corpora that are disjoint from every GQR-Bench test set:
   (``community-datasets/yahoo_answers_topics``, train; Society & Culture,
   Science & Mathematics, Education & Reference, Computers & Internet)
 
-Every candidate passes three filters:
+Every candidate must pass two filters:
 
 1. it contains no law / finance / healthcare keyword (``ID_TOPIC_PATTERNS``),
-   so the background class never teaches the router to reject on-topic text;
-2. it is not confidently in-domain (max probability <= 0.99) under a TF-IDF +
-   logistic-regression classifier trained on the v1 training split;
-3. it has no exact or 8-word-shingle overlap with the ID or OOD test sets.
+   so the background class never teaches a router to reject on-topic text;
+2. it has no exact or 8-word-shingle overlap with the ID or OOD test sets.
+
+Selection is content-addressed: each source keeps the eligible passages with
+the smallest seeded BLAKE2b hash, and the final order is again a hash order.
+The result therefore does not depend on shard order, streaming or shuffling
+implementations, or library versions, and ``EXPECTED_SHA256`` pins it.
 
 The three sources contribute equally, and the class is sized like one
 in-distribution domain in each split. Test sets are unchanged, so v1 and v2
@@ -29,35 +32,42 @@ scores are directly comparable. The built corpus is cached as parquet under
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from .dataloader import SEED, DataLoader, domain2label
 
 BACKGROUND_DOMAIN = "ood"
 BACKGROUND_LABEL = domain2label[BACKGROUND_DOMAIN]
-SOURCES = ("wikitext", "dolly", "yahoo")
+BUILD_ID = "v2-hashrank"
+SOURCES = {
+    "wikitext": ("Salesforce/wikitext", "wikitext-103-raw-v1",
+                 "b08601e04326c79dfdd32d625aee71d232d685c3"),
+    "dolly": ("databricks/databricks-dolly-15k", None,
+              "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a"),
+    "yahoo": ("community-datasets/yahoo_answers_topics", None,
+              "6652a1e7c94f7260a0bfd0c9092dd48e2d536ea1"),
+}
 YAHOO_TOPICS = (0, 1, 3, 4)
 MAX_CHARS = 2_000
 MIN_CHARS = 40
+MIN_DOLLY_CHARS = 15
 SHINGLE_WORDS = 8
-CLF_MAX_PROBA = 0.99
-OVERSAMPLE = 2.5
-STREAM_BUFFER = 50_000
+OVERSAMPLE = 1.25
 
 # sha256 over the default v2 background texts (train split, then eval split).
 # A mismatch means an upstream corpus changed and the build is not the
 # reference GQR-Bench v2 background.
 EXPECTED_SHA256: str | None = (
-    "8cb99a014bcdd9d8340cd4c1973ae63c65c75143f7ba70395a66389265fea98c"
+    "95c788a2d92f194534c431932f9ed6ed2ab796ed1693d0bc79592ef45573063d"
 )
 
 ID_TOPIC_PATTERNS = {
@@ -89,6 +99,15 @@ def shingles(text: str, k: int = SHINGLE_WORDS) -> set[str]:
     return {" ".join(words[i : i + k]) for i in range(len(words) - k + 1)}
 
 
+def _digest(text: str) -> int:
+    return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8).digest(), "big")
+
+
+def rank_key(text: str, seed: int, salt: str) -> int:
+    """Seeded, content-addressed sort key: independent of row order and platform."""
+    return _digest(f"{seed}\0{salt}\0{text}")
+
+
 class OverlapIndex:
     """Exact (normalized) and k-word-shingle overlap lookup."""
 
@@ -111,10 +130,6 @@ class OverlapIndex:
         return any(_digest(s) in self.shingles for s in shingles(text))
 
 
-def _digest(text: str) -> int:
-    return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8).digest())
-
-
 def fingerprint(texts: Iterable[str]) -> str:
     h = hashlib.sha256()
     for text in texts:
@@ -123,154 +138,126 @@ def fingerprint(texts: Iterable[str]) -> str:
     return h.hexdigest()
 
 
+def smallest_eligible(texts: Iterable[str], limit: int, seed: int, salt: str) -> list[str]:
+    """The ``limit`` distinct keyword-clean texts with the smallest rank keys.
+
+    The result depends only on the multiset of input texts, not on their order.
+    """
+    heap: list[tuple[int, str]] = []  # max-heap via negated keys
+    kept: set[str] = set()
+    for raw in texts:
+        text = str(raw).strip()[:MAX_CHARS]
+        if not text or text in kept:
+            continue
+        key = rank_key(text, seed, salt)
+        if len(heap) >= limit and key >= -heap[0][0]:
+            continue
+        if id_topic_hit(text) is not None:
+            continue
+        if len(heap) < limit:
+            heapq.heappush(heap, (-key, text))
+        else:
+            _, dropped = heapq.heapreplace(heap, (-key, text))
+            kept.discard(dropped)
+        kept.add(text)
+    return [text for _, text in sorted(heap, key=lambda item: (-item[0], item[1]))]
+
+
 def select_background(
     pools: dict[str, list[str]],
-    id_max_proba: Callable[[list[str]], np.ndarray],
     test_index: OverlapIndex,
     n_total: int,
     seed: int = SEED,
 ) -> tuple[list[str], list[str], dict[str, int]]:
-    """Filter the keyword-clean candidate pools and draw a source-balanced sample.
+    """Filter the candidate pools and draw a source-balanced, hash-ordered sample.
 
-    Returns (texts, sources, stats). Sources contribute equally; the result is
-    shuffled with ``seed``. Raises ValueError if a source runs out of candidates.
+    Returns (texts, sources, stats). Each source contributes the same number of
+    passages. Raises ValueError if a source runs out of clean candidates.
     """
     per_source = math.ceil(n_total / len(pools))
-    rng = np.random.default_rng(seed)
     stats: dict[str, int] = {}
-    texts: list[str] = []
-    sources: list[str] = []
+    chosen: list[tuple[int, str, str]] = []
     for name, pool in pools.items():
-        pool = [t for t in dict.fromkeys(pool) if id_topic_hit(t) is None]
-        stats[f"{name}_keyword_clean"] = len(pool)
-        if pool:
-            keep = np.asarray(id_max_proba(pool)) <= CLF_MAX_PROBA
-            stats[f"{name}_classifier_dropped"] = int((~keep).sum())
-            pool = [t for t, k in zip(pool, keep, strict=True) if k]
-        leaked = [test_index.hit(t) for t in pool]
-        stats[f"{name}_test_overlap_dropped"] = int(sum(leaked))
-        pool = [t for t, bad in zip(pool, leaked, strict=True) if not bad]
-        if len(pool) < per_source:
+        clean = [t for t in dict.fromkeys(pool) if id_topic_hit(t) is None]
+        stats[f"{name}_candidates"] = len(clean)
+        leaked = {t for t in clean if test_index.hit(t)}
+        stats[f"{name}_test_overlap_dropped"] = len(leaked)
+        clean = sorted((t for t in clean if t not in leaked), key=lambda t: rank_key(t, seed, name))
+        if len(clean) < per_source:
             raise ValueError(
-                f"background source {name!r} has {len(pool)} clean candidates, "
+                f"background source {name!r} has {len(clean)} clean candidates, "
                 f"needs {per_source}; stats so far: {stats}"
             )
-        order = rng.permutation(len(pool))[:per_source]
-        texts.extend(pool[i] for i in order)
-        sources.extend([name] * per_source)
+        chosen.extend((rank_key(t, seed, "order"), t, name) for t in clean[:per_source])
         stats[f"{name}_used"] = per_source
-    order = rng.permutation(len(texts))[:n_total]
-    return [texts[i] for i in order], [sources[i] for i in order], stats
+    chosen.sort()
+    chosen = chosen[:n_total]
+    return [t for _, t, _ in chosen], [s for _, _, s in chosen], stats
 
 
-def _wikitext_candidates(limit: int, seed: int) -> list[str]:
+def _stream(source: str) -> Iterable[dict]:
     from datasets import load_dataset
 
-    stream = load_dataset(
-        "Salesforce/wikitext", "wikitext-103-raw-v1", split="train", streaming=True
-    ).shuffle(seed=seed, buffer_size=STREAM_BUFFER)
-    out: list[str] = []
-    for row in stream:
-        text = row["text"].strip()
-        if len(text) >= MIN_CHARS and not text.startswith("=") and id_topic_hit(text) is None:
-            out.append(text[:MAX_CHARS])
-            if len(out) >= limit:
-                break
-    return out
+    repo, config, revision = SOURCES[source]
+    return load_dataset(repo, config, split="train", revision=revision, streaming=True)
 
 
-def _dolly_candidates(seed: int) -> list[str]:
-    from datasets import load_dataset
-
-    dolly = load_dataset("databricks/databricks-dolly-15k", split="train").shuffle(seed=seed)
-    return [
-        text[:MAX_CHARS]
-        for text in (str(t).strip() for t in dolly["instruction"])
-        if len(text) >= 15 and id_topic_hit(text) is None
-    ]
-
-
-def _yahoo_candidates(limit: int, seed: int) -> list[str]:
-    from datasets import load_dataset
-
-    stream = load_dataset(
-        "community-datasets/yahoo_answers_topics", split="train", streaming=True
-    ).shuffle(seed=seed, buffer_size=STREAM_BUFFER)
-    out: list[str] = []
-    for row in stream:
-        if row["topic"] not in YAHOO_TOPICS:
-            continue
-        text = f"{row['question_title']} {row['question_content']}".strip()
-        if len(text.split()) >= 4 and id_topic_hit(text) is None:
-            out.append(text[:MAX_CHARS])
-            if len(out) >= limit:
-                break
-    return out
-
-
-def _id_classifier(train_df: pd.DataFrame) -> Callable[[list[str]], np.ndarray]:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import make_pipeline
-
-    clf = make_pipeline(
-        TfidfVectorizer(sublinear_tf=True, ngram_range=(1, 2), min_df=2, max_features=200_000),
-        LogisticRegression(max_iter=1_000),
-    )
-    clf.fit(train_df["text"].astype(str).tolist(), train_df["label"].tolist())
-    return lambda texts: clf.predict_proba(texts).max(axis=1)
+def _candidates(source: str, limit: int, seed: int) -> list[str]:
+    rows = _stream(source)
+    if source == "wikitext":
+        texts = (
+            r["text"].strip() for r in rows
+            if len(r["text"].strip()) >= MIN_CHARS and not r["text"].strip().startswith("=")
+        )
+    elif source == "dolly":
+        texts = (r["instruction"] for r in rows if len(str(r["instruction"]).strip()) >= MIN_DOLLY_CHARS)
+    else:
+        texts = (
+            f"{r['question_title']} {r['question_content']}".strip() for r in rows
+            if r["topic"] in YAHOO_TOPICS
+            and len(f"{r['question_title']} {r['question_content']}".split()) >= 4
+        )
+    return smallest_eligible(texts, limit, seed, source)
 
 
 def _cache_dir() -> Path:
     return Path(os.environ.get("GQR_CACHE_DIR", Path.home() / ".cache" / "gqr"))
 
 
-def _background_frame(texts: list[str], sources: list[str]) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "text": texts,
-            "domain": BACKGROUND_DOMAIN,
-            "label": BACKGROUND_LABEL,
-            "source": sources,
-        }
-    )
+def _default_sizes(train_df: pd.DataFrame, eval_df: pd.DataFrame) -> tuple[int, int]:
+    n_domains = train_df["domain"].nunique()
+    return round(len(train_df) / n_domains), round(len(eval_df) / n_domains)
 
 
 def _build_or_load(
-    train_df: pd.DataFrame,
-    eval_df: pd.DataFrame,
-    id_test_df: pd.DataFrame,
-    n_train: int,
-    n_eval: int,
-    seed: int = SEED,
+    id_test_df: pd.DataFrame, n_train: int, n_eval: int, check: bool, seed: int = SEED
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    cache = _cache_dir() / f"background_v2_seed{seed}_train{n_train}_eval{n_eval}.parquet"
+    cache = _cache_dir() / f"background_{BUILD_ID}_seed{seed}_train{n_train}_eval{n_eval}.parquet"
     if cache.exists():
         df = pd.read_parquet(cache)
     else:
         n_total = n_train + n_eval
         limit = math.ceil(math.ceil(n_total / len(SOURCES)) * OVERSAMPLE)
-        pools = {
-            "wikitext": _wikitext_candidates(limit, seed),
-            "dolly": _dolly_candidates(seed),
-            "yahoo": _yahoo_candidates(limit, seed),
-        }
-        ood_tests = DataLoader.load_ood_test_dataset()
+        pools = {source: _candidates(source, limit, seed) for source in SOURCES}
         test_index = OverlapIndex(id_test_df["text"].astype(str))
-        for frame in ood_tests.values():
+        for frame in DataLoader.load_ood_test_dataset().values():
             test_index.add(frame["text"].astype(str))
-        texts, sources, stats = select_background(
-            pools, _id_classifier(train_df), test_index, n_total, seed
+        texts, sources, stats = select_background(pools, test_index, n_total, seed)
+        df = pd.DataFrame(
+            {
+                "text": texts,
+                "domain": BACKGROUND_DOMAIN,
+                "label": BACKGROUND_LABEL,
+                "source": sources,
+                "split": ["train"] * n_train + ["eval"] * n_eval,
+            }
         )
-        df = _background_frame(texts, sources)
-        df["split"] = ["train"] * n_train + ["eval"] * n_eval
         cache.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(cache, index=False)
         stats["sha256"] = fingerprint(texts)
         cache.with_suffix(".stats.json").write_text(json.dumps(stats, indent=2))
     digest = fingerprint(df["text"])
-    default_size = (n_train, n_eval) == _default_sizes(train_df, eval_df)
-    if default_size and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
+    if check and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
         warnings.warn(
             f"GQR-Bench v2 background fingerprint {digest[:12]} differs from the "
             f"reference {EXPECTED_SHA256[:12]}; an upstream corpus has changed.",
@@ -279,11 +266,6 @@ def _build_or_load(
     train_bg = df[df["split"] == "train"].drop(columns="split").reset_index(drop=True)
     eval_bg = df[df["split"] == "eval"].drop(columns="split").reset_index(drop=True)
     return train_bg, eval_bg
-
-
-def _default_sizes(train_df: pd.DataFrame, eval_df: pd.DataFrame) -> tuple[int, int]:
-    n_domains = train_df["domain"].nunique()
-    return round(len(train_df) / n_domains), round(len(eval_df) / n_domains)
 
 
 def load_background_dataset(
@@ -295,25 +277,17 @@ def load_background_dataset(
     domain has. Columns: text, domain ("ood"), label (3), source.
     """
     train_df, eval_df, id_test_df = DataLoader.load_train_dataset()
-    default_train, default_eval = _default_sizes(train_df, eval_df)
-    return _build_or_load(
-        train_df,
-        eval_df,
-        id_test_df,
-        default_train if n_train is None else n_train,
-        default_eval if n_eval is None else n_eval,
-    )
+    default = _default_sizes(train_df, eval_df)
+    sizes = (default[0] if n_train is None else n_train, default[1] if n_eval is None else n_eval)
+    return _build_or_load(id_test_df, *sizes, check=sizes == default)
 
 
 def load_train_dataset_v2() -> tuple[pd.DataFrame, pd.DataFrame]:
     """GQR-Bench v2 train and eval splits: v1 splits plus the background class."""
     train_df, eval_df, id_test_df = DataLoader.load_train_dataset()
-    train_bg, eval_bg = _build_or_load(
-        train_df, eval_df, id_test_df, *_default_sizes(train_df, eval_df)
-    )
+    train_bg, eval_bg = _build_or_load(id_test_df, *_default_sizes(train_df, eval_df), check=True)
     out = []
     for split, background in ((train_df, train_bg), (eval_df, eval_bg)):
-        split = split.assign(source="gqr")
-        combined = pd.concat([split, background], ignore_index=True)
+        combined = pd.concat([split.assign(source="gqr"), background], ignore_index=True)
         out.append(combined.sample(frac=1, random_state=SEED).reset_index(drop=True))
     return out[0], out[1]

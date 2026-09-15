@@ -48,17 +48,19 @@ background_train, background_eval = gqr.load_background_dataset()  # background 
 ```
 
 The background class is sized like one in-distribution domain and drawn equally from
-three general-purpose corpora, none of which is used by any test set:
-wikitext-103 prose, dolly-15k instructions, and Yahoo Answers questions from topics
-outside law, finance, and healthcare. Each candidate must pass three filters:
+three general-purpose corpora at pinned revisions, none of which is used by any test
+set: wikitext-103 prose, dolly-15k instructions, and Yahoo Answers questions from
+topics outside law, finance, and healthcare. Each candidate must pass two filters:
 
 1. no law, finance, or healthcare keyword;
-2. not confidently in-domain (max probability ≤ 0.99) under a TF-IDF + logistic
-   regression classifier trained on the v1 training split;
-3. no exact or 8-word-shingle overlap with the ID or OOD test sets.
+2. no exact or 8-word-shingle overlap with the ID or OOD test sets.
 
-The first call builds the corpus and caches it under `$GQR_CACHE_DIR`
-(default `~/.cache/gqr`), together with per-source filter statistics.
+Selection is content-addressed: each source keeps the eligible passages with the
+smallest seeded hash. The build is therefore identical across machines and library
+versions, and a fingerprint check warns if an upstream corpus ever changes.
+
+The first call builds the corpus (one streamed pass over each source) and caches it
+under `$GQR_CACHE_DIR` (default `~/.cache/gqr`), with per-source filter statistics.
 
 ## Data sources
 
