@@ -75,7 +75,9 @@ UNSEEN_ID_SETS: dict[str, tuple[str, str, str | None, str, str]] = {
 REDDIT_FINANCE_ROWS = 40_000  # the first rows of the pinned revision; the full set is ~250k posts
 
 # sha256 over the texts of the default build (set order of UNSEEN_ID_SETS, then hash order).
-EXPECTED_SHA256: str | None = None
+EXPECTED_SHA256: str | None = (
+    "83c9b1d21a593a4a440efb3deff4eb363c19dfb4699fab2396c471dcdae0c624"
+)
 
 
 def _texts(name: str) -> Iterable[str]:
