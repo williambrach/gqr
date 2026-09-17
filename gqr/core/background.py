@@ -12,7 +12,10 @@ general-purpose corpora, at pinned revisions, that no GQR-Bench test set uses:
   (``community-datasets/yahoo_answers_topics``, train; Society & Culture,
   Science & Mathematics, Education & Reference, Computers & Internet)
 
-Every candidate must pass two filters:
+Candidates are deduplicated on normalized text (case, punctuation and
+whitespace ignored) within and across sources before the train / eval split, so
+the same question never lands in both splits. Every candidate must also pass two
+filters:
 
 1. it contains no law / finance / healthcare keyword (``ID_TOPIC_PATTERNS``),
    so the background class never teaches a router to reject on-topic text;
@@ -47,7 +50,7 @@ from .dataloader import SEED, DataLoader, domain2label
 
 BACKGROUND_DOMAIN = "ood"
 BACKGROUND_LABEL = domain2label[BACKGROUND_DOMAIN]
-BUILD_ID = "v2-hashrank"
+BUILD_ID = "v2-hashrank-dedup"
 SOURCES = {
     "wikitext": ("Salesforce/wikitext", "wikitext-103-raw-v1",
                  "b08601e04326c79dfdd32d625aee71d232d685c3"),
@@ -67,7 +70,7 @@ OVERSAMPLE = 1.25
 # A mismatch means an upstream corpus changed and the build is not the
 # reference GQR-Bench v2 background.
 EXPECTED_SHA256: str | None = (
-    "95c788a2d92f194534c431932f9ed6ed2ab796ed1693d0bc79592ef45573063d"
+    "bd419e53a1a9dd70e54c1fa616e5d39ccc78f95acda078cf7e5a7068bd8c302b"
 )
 
 ID_TOPIC_PATTERNS = {
@@ -139,28 +142,35 @@ def fingerprint(texts: Iterable[str]) -> str:
 
 
 def smallest_eligible(texts: Iterable[str], limit: int, seed: int, salt: str) -> list[str]:
-    """The ``limit`` distinct keyword-clean texts with the smallest rank keys.
+    """The ``limit`` keyword-clean texts, distinct after normalization, with the
+    smallest rank keys.
 
-    The result depends only on the multiset of input texts, not on their order.
+    Texts that normalize identically share one rank key and are represented by
+    the lexicographically smallest variant. The result depends only on the
+    multiset of input texts, not on their order.
     """
-    heap: list[tuple[int, str]] = []  # max-heap via negated keys
-    kept: set[str] = set()
+    heap: list[tuple[int, str]] = []  # max-heap via negated keys, over normalized texts
+    representative: dict[str, str] = {}
     for raw in texts:
         text = str(raw).strip()[:MAX_CHARS]
-        if not text or text in kept:
+        norm = normalize(text)
+        if not norm:
             continue
-        key = rank_key(text, seed, salt)
+        if norm in representative:
+            representative[norm] = min(representative[norm], text)
+            continue
+        key = rank_key(norm, seed, salt)
         if len(heap) >= limit and key >= -heap[0][0]:
             continue
-        if id_topic_hit(text) is not None:
+        if id_topic_hit(norm) is not None:
             continue
         if len(heap) < limit:
-            heapq.heappush(heap, (-key, text))
+            heapq.heappush(heap, (-key, norm))
         else:
-            _, dropped = heapq.heapreplace(heap, (-key, text))
-            kept.discard(dropped)
-        kept.add(text)
-    return [text for _, text in sorted(heap, key=lambda item: (-item[0], item[1]))]
+            _, dropped = heapq.heapreplace(heap, (-key, norm))
+            del representative[dropped]
+        representative[norm] = text
+    return [representative[norm] for _, norm in sorted(heap, key=lambda item: (-item[0], item[1]))]
 
 
 def select_background(
@@ -172,23 +182,39 @@ def select_background(
     """Filter the candidate pools and draw a source-balanced, hash-ordered sample.
 
     Returns (texts, sources, stats). Each source contributes the same number of
-    passages. Raises ValueError if a source runs out of clean candidates.
+    passages, and no two returned texts are equal after normalization, so no
+    question can appear in both the train and the eval split. A text found in
+    several sources belongs to the alphabetically first one. Raises ValueError if
+    a source runs out of clean candidates.
     """
     per_source = math.ceil(n_total / len(pools))
     stats: dict[str, int] = {}
+    groups: dict[str, dict[str, str]] = {}  # source -> normalized text -> representative
+    owner: dict[str, str] = {}  # normalized text -> source
+    for name in sorted(pools):
+        groups[name] = {}
+        for raw in pools[name]:
+            text = str(raw)
+            norm = normalize(text)
+            if not norm or id_topic_hit(norm) is not None:
+                continue
+            groups[name][norm] = min(groups[name].get(norm, text), text)
+            owner.setdefault(norm, name)
     chosen: list[tuple[int, str, str]] = []
-    for name, pool in pools.items():
-        clean = [t for t in dict.fromkeys(pool) if id_topic_hit(t) is None]
-        stats[f"{name}_candidates"] = len(clean)
-        leaked = {t for t in clean if test_index.hit(t)}
+    for name, group in groups.items():
+        stats[f"{name}_candidates"] = len(group)
+        clean = {norm: text for norm, text in group.items() if owner[norm] == name}
+        stats[f"{name}_cross_source_duplicates_dropped"] = len(group) - len(clean)
+        leaked = {norm for norm, text in clean.items() if test_index.hit(text)}
         stats[f"{name}_test_overlap_dropped"] = len(leaked)
-        clean = sorted((t for t in clean if t not in leaked), key=lambda t: rank_key(t, seed, name))
+        ranked = sorted((n for n in clean if n not in leaked), key=lambda n: rank_key(n, seed, name))
+        clean = [clean[n] for n in ranked]
         if len(clean) < per_source:
             raise ValueError(
                 f"background source {name!r} has {len(clean)} clean candidates, "
                 f"needs {per_source}; stats so far: {stats}"
             )
-        chosen.extend((rank_key(t, seed, "order"), t, name) for t in clean[:per_source])
+        chosen.extend((rank_key(normalize(t), seed, "order"), t, name) for t in clean[:per_source])
         stats[f"{name}_used"] = per_source
     chosen.sort()
     chosen = chosen[:n_total]

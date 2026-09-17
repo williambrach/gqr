@@ -4,23 +4,27 @@ Run: uv run --with pytest pytest tests
 """
 
 import random
+from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from gqr.core import background
 from gqr.core.background import (
     OverlapIndex,
     fingerprint,
     id_topic_hit,
+    normalize,
     select_background,
     smallest_eligible,
 )
-from gqr.core.dataloader import load_train_dataset
+from gqr.core.dataloader import DataLoader, load_train_dataset
 
 
-def pools(n: int) -> dict[str, list[str]]:
+def pools(n: int, **sizes: int) -> dict[str, list[str]]:
     # fewer than 8 words each, so overlap means an exact match, never a shared shingle
     return {
-        name: [f"{name} item {i} about gardens" for i in range(n)]
+        name: [f"{name} item {i} about gardens" for i in range(sizes.get(name, n))]
         for name in ("wikitext", "dolly", "yahoo")
     }
 
@@ -48,6 +52,57 @@ def test_smallest_eligible_ignores_input_order_and_filters_keywords() -> None:
     assert len(first) == len(set(first)) == 20
     assert all(id_topic_hit(t) is None for t in first)
     assert first != smallest_eligible(texts, 20, seed=43, salt="dolly")
+
+
+def test_smallest_eligible_collapses_normalized_duplicates_order_invariantly() -> None:
+    variants = ["What is photosynthesis?", "What is Photosynthesis", "what is photosynthesis!"]
+    texts = variants + [f"passage {i} about sailing" for i in range(50)]
+    first = smallest_eligible(texts, 51, seed=42, salt="dolly")
+    assert first == smallest_eligible(list(reversed(texts)), 51, seed=42, salt="dolly")
+    assert len({normalize(t) for t in first}) == len(first) == 51
+    assert "What is Photosynthesis" in first  # smallest variant represents the group
+
+
+def test_select_background_deduplicates_normalized_text_within_and_across_sources() -> None:
+    # every source has exactly 12 distinct clean texts, so all of them are selected
+    candidates = pools(12, dolly=10)
+    candidates["dolly"] += ["What is photosynthesis?", "What is Photosynthesis"]
+    candidates["dolly"] += ["What is the meaning of life?", "what is the meaning of life?"]
+    candidates["yahoo"] += ["WHAT IS THE MEANING OF LIFE", "yahoo item 3 about gardens!"]
+    texts, sources, stats = select_background(candidates, OverlapIndex(), 36, seed=0)
+    norms = [normalize(t) for t in texts]
+    assert len(set(norms)) == len(norms) == 36
+    assert "what is photosynthesis" in norms and "what is the meaning of life" in norms
+    assert sources[norms.index("what is the meaning of life")] == "dolly"
+    assert stats["yahoo_cross_source_duplicates_dropped"] == 1
+    assert stats["yahoo_candidates"] == 13  # "yahoo item 3" variants collapse to one
+
+
+def test_build_puts_no_normalized_duplicate_in_both_splits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 10 distinct clean texts per source for 30 rows, so every duplicate group is used
+    base = pools(10, dolly=8)
+    extra = {
+        "dolly": ["What is photosynthesis?", "What is Photosynthesis",
+                  "What is the meaning of life?", "what is the meaning of life?"],
+        "yahoo": ["What is the Meaning of Life", "what is photosynthesis ?"],
+    }
+
+    def fake_candidates(source: str, limit: int, seed: int) -> list[str]:
+        texts = base[source] + extra.get(source, [])
+        return smallest_eligible(texts, limit, seed, source)
+
+    monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(background, "_candidates", fake_candidates)
+    monkeypatch.setattr(DataLoader, "load_ood_test_dataset", staticmethod(dict))
+    id_test = pd.DataFrame({"text": ["an unrelated test question"]})
+    train_bg, eval_bg = background._build_or_load(id_test, 24, 6, check=False)
+    train_norms = set(train_bg["text"].map(normalize))
+    eval_norms = set(eval_bg["text"].map(normalize))
+    assert len(train_norms) == len(train_bg) == 24 and len(eval_norms) == len(eval_bg) == 6
+    assert not train_norms & eval_norms
+    assert {"what is photosynthesis", "what is the meaning of life"} <= train_norms | eval_norms
 
 
 def test_select_background_is_balanced_sized_and_order_invariant() -> None:

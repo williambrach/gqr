@@ -50,7 +50,10 @@ background_train, background_eval = gqr.load_background_dataset()  # background 
 The background class is sized like one in-distribution domain and drawn equally from
 three general-purpose corpora at pinned revisions, none of which is used by any test
 set: wikitext-103 prose, dolly-15k instructions, and Yahoo Answers questions from
-topics outside law, finance, and healthcare. Each candidate must pass two filters:
+topics outside law, finance, and healthcare. Candidates are deduplicated on normalized
+text (case, punctuation, and whitespace ignored) within and across sources before the
+train/eval split, so no question appears in both splits. Each candidate must also pass
+two filters:
 
 1. no law, finance, or healthcare keyword;
 2. no exact or 8-word-shingle overlap with the ID or OOD test sets.
