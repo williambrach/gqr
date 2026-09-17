@@ -7,10 +7,11 @@ in-domain test sets from new sources, three per domain, and keeps the existing
 seven OOD test sets:
 
 * finance: banking77 customer queries, financial-qa-10K questions about annual
-  reports, personal-finance Reddit posts
+  reports (finance-keyword questions only), finance and investing Reddit posts
 * healthcare: iCliniq patient questions, MedQuAD definitional questions, medical
   flashcards
-* law: r/legaladvice posts and two legal Q&A collections
+* law: r/legaladvice posts, legal-qa-v1 user questions, MMLU professional-law
+  fact patterns
 
 None of these sources is used by GQR-Bench v1 or v2 training, evaluation or test
 data, and each dataset is pinned to a commit revision. Every candidate must pass
@@ -30,12 +31,14 @@ parquet under ``$GQR_CACHE_DIR`` (default ``~/.cache/gqr``).
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from collections.abc import Callable, Iterable
 
 import pandas as pd
 
 from .background import (
+    ID_TOPIC_PATTERNS,
     OverlapIndex,
     _atomic_write,
     _cache_dir,
@@ -46,7 +49,7 @@ from .background import (
 )
 from .dataloader import SEED, DataLoader, domain2label, load_ood_test_dataset
 
-BUILD_ID = "unseen-id-minrep"
+BUILD_ID = "unseen-id-audited"
 PER_SET = 1_000
 MIN_WORDS = 3
 MAX_CHARS = 4_000
@@ -69,10 +72,24 @@ UNSEEN_ID_SETS: dict[str, tuple[str, str, str | None, str, str]] = {
                      "f105b9d763743e20d2f3b8e33f73055ad414e7c5"),
     "legal_qa_v1": ("law", "dzunggg/legal-qa-v1", None, "train",
                     "6280beb74faf5b4dfd1f63adbf7d18908b377b93"),
-    "legal_qa_ib": ("law", "ibunescu/qa_legal_dataset_train", None, "train",
-                    "d1b43a29345dba8cbf95ef568906a7553e91c126"),
+    "mmlu_professional_law": ("law", "cais/mmlu", "professional_law", "test",
+                              "c30699e8356da336a370243923dbaf21066bb9fe"),
 }  # fmt: skip
 REDDIT_FINANCE_ROWS = 40_000  # the first rows of the pinned revision; the full set is ~250k posts
+_FINANCE_RE = re.compile(ID_TOPIC_PATTERNS["finance"], re.IGNORECASE)
+
+
+def is_finance_question(text: str) -> bool:
+    """financial-qa-10K asks about every part of an annual report (store counts, ESG programs,
+    litigation); keep only questions with a finance keyword, so its label is actually finance."""
+    return bool(_FINANCE_RE.search(str(text)))
+
+
+def legal_qa_question(text: str) -> str | None:
+    """legal-qa-v1 mixes user questions ("Q: ...") with article titles; keep the questions and
+    drop the "Q:" marker, which would identify the source."""
+    text = str(text or "").strip()
+    return text[2:].strip() if text.startswith("Q:") else None
 
 # sha256 over the texts of the default build (set order of UNSEEN_ID_SETS, then hash order).
 EXPECTED_SHA256: str | None = None
@@ -89,16 +106,16 @@ def _texts(name: str) -> Iterable[str]:
         return (f"{r['title']}\n{r['selftext'] or ''}" for r in ds)
     if name == "legal_reddit":
         return (f"{r['title']}\n{r['body']}" for r in ds)
-    if name == "legal_qa_ib":
-        column = "Question" if "Question" in ds.column_names else "question"
-        return ds[column]
+    if name == "financial_qa_10k":
+        return (q for q in ds["question"] if is_finance_question(q))
+    if name == "legal_qa_v1":
+        return (q for q in map(legal_qa_question, ds["question"]) if q)
     column = {
         "banking77": "text",
-        "financial_qa_10k": "question",
         "icliniq": "input",
         "medquad": "Question",
         "med_flashcards": "input",
-        "legal_qa_v1": "question",
+        "mmlu_professional_law": "question",
     }[name]
     return ds[column]
 

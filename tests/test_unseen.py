@@ -12,7 +12,13 @@ import pytest
 
 from gqr.core.background import OverlapIndex
 from gqr.core.dataloader import FINANCE_SOURCE
-from gqr.core.unseen import UNSEEN_ID_SETS, select_unseen, unseen_scores
+from gqr.core.unseen import (
+    UNSEEN_ID_SETS,
+    is_finance_question,
+    legal_qa_question,
+    select_unseen,
+    unseen_scores,
+)
 
 
 def test_sets_are_balanced_pinned_and_unseen() -> None:
@@ -113,3 +119,10 @@ def test_unavailable_ood_set_is_screened_after_it_becomes_available(
     assert leaking not in second["text"].tolist()
     assert sorted(second["text"]) == sorted(clean)
     assert list(tmp_path.glob("*.parquet"))  # a complete build is cached
+
+
+def test_source_specific_cleaning() -> None:
+    assert is_finance_question("How much cash did the company pay for income taxes in 2023?")
+    assert not is_finance_question("What are the primary pillars of FedEx's community engagement program?")
+    assert legal_qa_question("Q: Can I sue the hospital for negligence?") == "Can I sue the hospital for negligence?"
+    assert legal_qa_question("Three Features of a Kangaroo Court") is None

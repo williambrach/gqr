@@ -76,7 +76,7 @@ domain, and pairs them with the existing OOD test sets:
 |---|---|
 | finance | `banking77`, `financial_qa_10k`, `reddit_finance` |
 | healthcare | `icliniq`, `medquad`, `med_flashcards` |
-| law | `legal_reddit`, `legal_qa_v1`, `legal_qa_ib` |
+| law | `legal_reddit`, `legal_qa_v1`, `mmlu_professional_law` |
 
 Every dataset is pinned to a commit revision. Each text must pass a leakage screen (no
 exact or 8-word-shingle overlap with GQR-Bench train, eval, ID test, OOD test, or the v2
