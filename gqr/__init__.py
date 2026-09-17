@@ -12,6 +12,12 @@ from .core.dataloader import (
     load_train_dataset,
 )
 from .core.evaluator import evaluate, evaluate_by_dataset
+from .core.unseen import (
+    load_unseen_id_test_dataset,
+    score_unseen,
+    score_unseen_batch,
+    unseen_scores,
+)
 
 
 def score(model_fn: Callable[[str], int]) -> dict:

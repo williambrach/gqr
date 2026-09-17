@@ -8,6 +8,27 @@ A benchmark and evaluation toolkit for developing and testing guarded query rout
 pip install gqr
 ```
 
+## Versions
+
+| Version | Evaluation suites | Training data |
+|---|---|---|
+| **1.0.0** | original: ID test + 7 OOD test sets (`score`, `score_batch`) | `load_train_dataset(version="v1")` (three ID domains, default) and `version="v2"` (+ background class) |
+| **2.0.0** | 1.0.0 **plus GQR-unseen**: nine unseen in-domain test sets scored with the same OOD test sets (`score_unseen`, `score_unseen_batch`) | unchanged |
+
+The original ID and OOD test sets are identical in both, so GQR scores stay comparable across
+versions.
+
+```bash
+pip install "git+https://github.com/williambrach/gqr@v1.0.0"    # 1.0.0, original suite
+pip install "git+https://github.com/williambrach/gqr@gqr-unseen" # 2.0.0, adds GQR-unseen
+```
+
+Once the releases are on PyPI, `pip install "gqr<2"` will pin the 1.x line and `pip install gqr`
+will give the latest. The newest version currently published on PyPI is `0.0.5`, the code used for
+the ECAI 2025 paper and the [leaderboard](https://gqr-bench.github.io/), which report the original
+evaluation suite. Results from different versions should state which evaluation suite and which
+training data they used.
+
 ## Quick Start
 
 ```python
@@ -64,6 +85,40 @@ versions, and a fingerprint check warns if an upstream corpus ever changes.
 
 The first call builds the corpus (one streamed pass over each source) and caches it
 under `$GQR_CACHE_DIR` (default `~/.cache/gqr`), with per-source filter statistics.
+
+## GQR-unseen: generalization to new in-domain sources
+
+The GQR-Bench ID test set comes from the same three sources as the training data, so ID
+accuracy there says little about how routing carries over to queries from other sources.
+GQR-unseen adds nine in-domain test sets from sources GQR-Bench does not use, three per
+domain, and pairs them with the existing OOD test sets:
+
+| domain | sets |
+|---|---|
+| finance | `banking77`, `financial_qa_10k`, `reddit_finance` |
+| healthcare | `icliniq`, `medquad`, `med_flashcards` |
+| law | `legal_reddit`, `legal_qa_v1`, `mmlu_professional_law` |
+
+Every dataset is pinned to a commit revision. Each text must pass a leakage screen (no
+exact or 8-word-shingle overlap with GQR-Bench train, eval, ID test, OOD test, or the v2
+background class) and is deduplicated across sets. Each set keeps at most 1,000 texts
+with the smallest seeded content hash, so the build is identical across machines.
+
+```python
+import gqr
+
+unseen_id = gqr.load_unseen_id_test_dataset()  # text, label (0/1/2), domain, dataset
+
+scores = gqr.score_unseen_batch(batch_model_fn)  # or gqr.score_unseen(model_fn)
+# {"unseen_id_accuracy", "ood_accuracy", "gqr_unseen_score", ...per-dataset breakdowns}
+```
+
+The **GQR-unseen score** is the harmonic mean of unseen ID accuracy (macro-averaged over
+the nine sets, so every source weighs the same) and OOD accuracy on the existing GQR-Bench
+OOD test sets (as in the GQR score). Report it next to the GQR score: a large gap indicates
+weaker generalization to these unseen sources and warrants inspection of the per-dataset
+results. A gap alone does not show *why* (writing style, different subtopics, difficulty, or
+ambiguous source-derived labels can all contribute). The existing test sets are unchanged.
 
 ## Data sources
 
