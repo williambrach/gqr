@@ -5,8 +5,10 @@ Run: uv run --with pytest pytest tests
 
 import math
 import random
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from gqr.core.background import OverlapIndex
 from gqr.core.dataloader import FINANCE_SOURCE
@@ -68,3 +70,46 @@ def test_unseen_scores_macro_average_over_sets() -> None:
     assert math.isclose(s["gqr_unseen_score"], 0.75)
     assert s["unseen_id_per_dataset"] == {"a": 0.5, "b": 1.0}
     assert s["ood_per_dataset"] == {"x": 0.5, "y": 1.0}
+
+
+def test_select_unseen_representative_does_not_depend_on_row_order() -> None:
+    group = ["Why was my card declined at the shop?", "WHY WAS MY CARD DECLINED AT THE SHOP!"]
+    others = [f"how do I order a new card number {i}" for i in range(5)]
+    forward, _ = select_unseen({"banking77": group + others}, OverlapIndex(), per_set=100)
+    backward, _ = select_unseen({"banking77": others + group[::-1]}, OverlapIndex(), per_set=100)
+    # the duplicate group is certainly selected (per_set exceeds the candidates)
+    assert len(forward) == 6
+    assert forward["text"].tolist() == backward["text"].tolist()
+    assert min(group) in forward["text"].tolist()
+
+
+def test_unavailable_ood_set_is_screened_after_it_becomes_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gqr.core import unseen
+
+    leaking = "please help my landlord kept the whole security deposit after I moved out"
+    clean = [f"can my employer read my private messages at work number {i}" for i in range(5)]
+    empty = pd.DataFrame({"text": pd.Series(dtype=str)})
+    ood_available = {"flag": False}
+
+    def fake_ood() -> dict[str, pd.DataFrame]:
+        dkhate = pd.DataFrame({"text": [leaking]}) if ood_available["flag"] else empty
+        return {"jigsaw": pd.DataFrame({"text": ["some toxic comment here"]}), "dkhate": dkhate}
+
+    monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(unseen.DataLoader, "load_train_dataset", staticmethod(lambda: (empty, empty, empty)))
+    monkeypatch.setattr(unseen.DataLoader, "load_ood_test_dataset", staticmethod(fake_ood))
+    monkeypatch.setattr(unseen, "load_background_dataset", lambda: (empty, empty))
+    monkeypatch.setattr(unseen, "_texts", lambda name: [leaking, *clean] if name == "legal_reddit" else [])
+
+    with pytest.warns(UserWarning, match="dkhate"):
+        first = unseen.load_unseen_id_test_dataset(per_set=10)
+    assert leaking in first["text"].tolist()  # could not be screened ...
+    assert not list(tmp_path.glob("*.parquet"))  # ... so nothing was cached
+
+    ood_available["flag"] = True
+    second = unseen.load_unseen_id_test_dataset(per_set=10)
+    assert leaking not in second["text"].tolist()
+    assert sorted(second["text"]) == sorted(clean)
+    assert list(tmp_path.glob("*.parquet"))  # a complete build is cached

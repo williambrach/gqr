@@ -1,10 +1,10 @@
 """GQR-unseen: in-domain test sets from sources GQR-Bench never uses.
 
 The GQR-Bench ID test set comes from the same three sources as the training data,
-so a router can score close to 100 % there by learning how those sources are
-written rather than what they are about. GQR-unseen replaces the ID half of the
-benchmark with nine in-domain test sets from new sources, three per domain, and
-keeps the existing seven OOD test sets:
+so ID accuracy there says little about how routing carries over to queries from
+other sources. GQR-unseen replaces the ID half of the benchmark with nine
+in-domain test sets from new sources, three per domain, and keeps the existing
+seven OOD test sets:
 
 * finance: banking77 customer queries, financial-qa-10K questions about annual
   reports, personal-finance Reddit posts
@@ -46,7 +46,7 @@ from .background import (
 )
 from .dataloader import SEED, DataLoader, domain2label, load_ood_test_dataset
 
-BUILD_ID = "unseen-id-v1"
+BUILD_ID = "unseen-id-minrep"
 PER_SET = 1_000
 MIN_WORDS = 3
 MAX_CHARS = 4_000
@@ -75,9 +75,7 @@ UNSEEN_ID_SETS: dict[str, tuple[str, str, str | None, str, str]] = {
 REDDIT_FINANCE_ROWS = 40_000  # the first rows of the pinned revision; the full set is ~250k posts
 
 # sha256 over the texts of the default build (set order of UNSEEN_ID_SETS, then hash order).
-EXPECTED_SHA256: str | None = (
-    "83c9b1d21a593a4a440efb3deff4eb363c19dfb4699fab2396c471dcdae0c624"
-)
+EXPECTED_SHA256: str | None = None
 
 
 def _texts(name: str) -> Iterable[str]:
@@ -125,6 +123,7 @@ def select_unseen(
             continue
         s = {"raw": 0, "too_short": 0, "duplicate": 0, "gqr_overlap": 0}
         candidates: dict[str, str] = {}
+        leaked: set[str] = set()
         for text in raw[name]:
             s["raw"] += 1
             text = str(text or "").strip()[:MAX_CHARS]
@@ -132,11 +131,16 @@ def select_unseen(
             if len(norm.split()) < MIN_WORDS:
                 s["too_short"] += 1
                 continue
-            if norm in candidates or norm in claimed:
+            if norm in candidates or norm in leaked or norm in claimed:
                 s["duplicate"] += 1
+                if norm in candidates:
+                    # spellings that normalize identically: keep the lexicographically smallest,
+                    # so the emitted query does not depend on row order
+                    candidates[norm] = min(candidates[norm], text)
                 continue
-            if seen.hit(text):
+            if seen.hit(text):  # overlap is decided on normalized text, so any spelling gives the same answer
                 s["gqr_overlap"] += 1
+                leaked.add(norm)
                 continue
             candidates[norm] = text
         ranked = sorted(candidates, key=lambda n: rank_key(n, seed, f"unseen:{name}"))[:per_set]
@@ -157,16 +161,23 @@ def select_unseen(
     return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)), stats
 
 
-def _seen_index() -> OverlapIndex:
-    """Everything a GQR-Bench v1/v2 router may have seen, plus both test sets."""
+def _seen_index() -> tuple[OverlapIndex, list[str]]:
+    """Everything a GQR-Bench v1/v2 router may have seen, plus both test sets.
+
+    Returns the index and the names of OOD test sets that could not be loaded
+    (DDSC/dkhate is gated); an index with missing sets screens incompletely.
+    """
     train_df, eval_df, id_test_df = DataLoader.load_train_dataset()
     background_train, background_eval = load_background_dataset()
     index = OverlapIndex()
     for frame in (train_df, eval_df, id_test_df, background_train, background_eval):
         index.add(frame["text"].astype(str))
-    for frame in DataLoader.load_ood_test_dataset().values():
+    missing = []
+    for name, frame in DataLoader.load_ood_test_dataset().items():
+        if frame.empty:
+            missing.append(name.strip())
         index.add(frame["text"].astype(str))
-    return index
+    return index, missing
 
 
 def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.DataFrame:
@@ -176,9 +187,27 @@ def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.
     """
     cache = _cache_dir() / f"{BUILD_ID}_seed{seed}_per{per_set}.parquet"
     if cache.exists():
-        return pd.read_parquet(cache)
+        try:
+            df = pd.read_parquet(cache)
+            if df.empty or not {"text", "label", "domain", "dataset"} <= set(df.columns):
+                raise ValueError("expected text, label, domain and dataset columns")
+            return df
+        except Exception as e:
+            warnings.warn(f"Ignoring unreadable GQR-unseen cache {cache} ({e}); rebuilding.", stacklevel=2)
+    seen, missing = _seen_index()
     raw = {name: _texts(name) for name in UNSEEN_ID_SETS}
-    df, stats = select_unseen(raw, _seen_index(), per_set, seed)
+    df, stats = select_unseen(raw, seen, per_set, seed)
+    if missing:
+        # Not cached, so the next call (for example after logging in to the Hugging Face
+        # Hub) rebuilds with the full overlap check.
+        warnings.warn(
+            f"GQR-unseen was not screened for overlap with the OOD test set(s) {missing}, "
+            f"which could not be loaded (DDSC/dkhate is gated: log in to the Hugging Face Hub "
+            f"and accept its terms). The sets are used for this call but not cached, and "
+            f"their fingerprint is not the reference one.",
+            stacklevel=2,
+        )
+        return df
     digest = fingerprint(df["text"])
     if seed == SEED and per_set == PER_SET and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
         warnings.warn(

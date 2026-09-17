@@ -67,10 +67,10 @@ under `$GQR_CACHE_DIR` (default `~/.cache/gqr`), with per-source filter statisti
 
 ## GQR-unseen: generalization to new in-domain sources
 
-The GQR-Bench ID test set comes from the same three sources as the training data, so
-ID accuracy there can reward learning how those sources are *written* rather than what
-they are *about*. GQR-unseen adds nine in-domain test sets from sources GQR-Bench never
-uses, three per domain, and pairs them with the existing OOD test sets:
+The GQR-Bench ID test set comes from the same three sources as the training data, so ID
+accuracy there says little about how routing carries over to queries from other sources.
+GQR-unseen adds nine in-domain test sets from sources GQR-Bench does not use, three per
+domain, and pairs them with the existing OOD test sets:
 
 | domain | sets |
 |---|---|
@@ -94,9 +94,10 @@ scores = gqr.score_unseen_batch(batch_model_fn)  # or gqr.score_unseen(model_fn)
 
 The **GQR-unseen score** is the harmonic mean of unseen ID accuracy (macro-averaged over
 the nine sets, so every source weighs the same) and OOD accuracy on the existing GQR-Bench
-OOD test sets (as in the GQR score). Report it next to the GQR score: a large gap means a
-router fits the benchmark's sources rather than its domains. The existing test sets are
-unchanged.
+OOD test sets (as in the GQR score). Report it next to the GQR score: a large gap indicates
+weaker generalization to these unseen sources and warrants inspection of the per-dataset
+results. A gap alone does not show *why* (writing style, different subtopics, difficulty, or
+ambiguous source-derived labels can all contribute). The existing test sets are unchanged.
 
 ## Data sources
 
