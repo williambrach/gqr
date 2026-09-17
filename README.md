@@ -33,6 +33,46 @@ def scoring_function(text: str) -> int:
 score = gqr.score(scoring_function)
 ```
 
+## GQR-Bench v2: background class for training
+
+GQR-Bench v1 provides training data for the three in-distribution domains only.
+v2 adds a fourth **background** class (label `3`, domain `"ood"`) to the train and
+eval splits, so a router can learn rejection directly instead of only through a
+confidence threshold. **Test sets are identical in v1 and v2**, so scores stay comparable.
+
+```python
+import gqr
+
+train_data, eval_data = gqr.load_train_dataset(version="v2")  # adds a `source` column
+background_train, background_eval = gqr.load_background_dataset()  # background rows only
+```
+
+The background class is sized like one in-distribution domain and drawn equally from
+three general-purpose corpora at pinned revisions, none of which is used by any test
+set: wikitext-103 prose (detokenized), dolly-15k instructions, and Yahoo Answers
+questions from topics outside law, finance, and healthcare. Candidates are deduplicated on normalized
+text (case, punctuation, and whitespace ignored) within and across sources before the
+train/eval split, so no question appears in both splits. Each candidate must also pass
+two filters:
+
+1. no law, finance, or healthcare keyword;
+2. no exact or 8-word-shingle overlap with the ID or OOD test sets.
+
+Selection is content-addressed: each source keeps the eligible passages with the
+smallest seeded hash. The build is therefore identical across machines and library
+versions, and a fingerprint check warns if an upstream corpus ever changes.
+
+The first call builds the corpus (one streamed pass over each source) and caches it
+under `$GQR_CACHE_DIR` (default `~/.cache/gqr`), with per-source filter statistics.
+
+## Data sources
+
+The original finance source `4DR1455/finance_questions` was removed from the Hugging
+Face Hub. It was a re-upload of `DeividasM/financial-instruction-aq22`, and the
+instructions GQR-Bench uses are identical, so the loader now reads the upstream
+dataset and the benchmark splits are unchanged. `Stanford/web_questions` is loaded
+under its current name, `stanfordnlp/web_questions`.
+
 ## Domain Labels
 
 The repository provides mappings between numerical labels and domain names:
@@ -69,6 +109,10 @@ uv venv --python 3.12
 
 ```
 uv sync 
+```
+
+```
+uv run --with pytest pytest tests
 ```
 
 ## Paper and Citations
