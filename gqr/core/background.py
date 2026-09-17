@@ -40,8 +40,9 @@ import json
 import math
 import os
 import re
+import tempfile
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pandas as pd
@@ -250,6 +251,36 @@ def _cache_dir() -> Path:
     return Path(os.environ.get("GQR_CACHE_DIR", Path.home() / ".cache" / "gqr"))
 
 
+def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
+    """Write to a temporary file next to ``path``, then rename it into place.
+
+    An interrupted or concurrent build never leaves a partial file at ``path``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_cache(cache: Path, n_rows: int) -> pd.DataFrame | None:
+    """The cached corpus, or None if there is none or it is unreadable."""
+    if not cache.exists():
+        return None
+    try:
+        df = pd.read_parquet(cache)
+        if len(df) != n_rows or not {"text", "source", "split"} <= set(df.columns):
+            raise ValueError(f"expected {n_rows} rows with text, source and split columns")
+    except Exception as e:
+        warnings.warn(f"Ignoring unreadable background cache {cache} ({e}); rebuilding.", stacklevel=4)
+        return None
+    return df
+
+
 def _default_sizes(train_df: pd.DataFrame, eval_df: pd.DataFrame) -> tuple[int, int]:
     n_domains = train_df["domain"].nunique()
     return round(len(train_df) / n_domains), round(len(eval_df) / n_domains)
@@ -259,14 +290,16 @@ def _build_or_load(
     id_test_df: pd.DataFrame, n_train: int, n_eval: int, check: bool, seed: int = SEED
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     cache = _cache_dir() / f"background_{BUILD_ID}_seed{seed}_train{n_train}_eval{n_eval}.parquet"
-    if cache.exists():
-        df = pd.read_parquet(cache)
-    else:
+    missing: list[str] = []
+    df = _read_cache(cache, n_train + n_eval)
+    if df is None:
         n_total = n_train + n_eval
         limit = math.ceil(math.ceil(n_total / len(SOURCES)) * OVERSAMPLE)
         pools = {source: _candidates(source, limit, seed) for source in SOURCES}
         test_index = OverlapIndex(id_test_df["text"].astype(str))
-        for frame in DataLoader.load_ood_test_dataset().values():
+        for name, frame in DataLoader.load_ood_test_dataset().items():
+            if frame.empty:
+                missing.append(name.strip())
             test_index.add(frame["text"].astype(str))
         texts, sources, stats = select_background(pools, test_index, n_total, seed)
         df = pd.DataFrame(
@@ -278,12 +311,24 @@ def _build_or_load(
                 "split": ["train"] * n_train + ["eval"] * n_eval,
             }
         )
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(cache, index=False)
-        stats["sha256"] = fingerprint(texts)
-        cache.with_suffix(".stats.json").write_text(json.dumps(stats, indent=2))
+        if missing:
+            # Not cached, so the next call (for example after logging in to the
+            # Hugging Face Hub) rebuilds with the full overlap check.
+            warnings.warn(
+                f"GQR-Bench v2 background was not screened for overlap with the OOD "
+                f"test set(s) {missing}, which could not be loaded (DDSC/dkhate is "
+                f"gated: log in to the Hugging Face Hub and accept its terms). The "
+                f"corpus is used for this call but not cached.",
+                stacklevel=3,
+            )
+        else:
+            stats["sha256"] = fingerprint(texts)
+            stats_json = json.dumps(stats, indent=2)
+            _atomic_write(cache.with_suffix(".stats.json"), lambda path: path.write_text(stats_json))
+            # the parquet file marks a finished build, so it is written last
+            _atomic_write(cache, lambda path: df.to_parquet(path, index=False))
     digest = fingerprint(df["text"])
-    if check and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
+    if check and not missing and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
         warnings.warn(
             f"GQR-Bench v2 background fingerprint {digest[:12]} differs from the "
             f"reference {EXPECTED_SHA256[:12]}; an upstream corpus has changed.",

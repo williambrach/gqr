@@ -105,6 +105,55 @@ def test_build_puts_no_normalized_duplicate_in_both_splits(
     assert {"what is photosynthesis", "what is the meaning of life"} <= train_norms | eval_norms
 
 
+def test_build_warns_and_does_not_cache_when_an_ood_test_set_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = pools(10)
+    empty = pd.DataFrame(columns=["text", "label", "domain"])
+    ood = {"dkhate": empty, "olid": pd.DataFrame({"text": ["an unrelated tweet"]})}
+    monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(background, "_candidates", lambda source, limit, seed: base[source])
+    monkeypatch.setattr(DataLoader, "load_ood_test_dataset", staticmethod(lambda: ood))
+    id_test = pd.DataFrame({"text": ["an unrelated test question"]})
+    with pytest.warns(UserWarning, match=r"\['dkhate'\].*not cached"):
+        train_bg, eval_bg = background._build_or_load(id_test, 24, 6, check=True)
+    assert len(train_bg) == 24 and len(eval_bg) == 6
+    assert not list(tmp_path.iterdir())
+
+    ood["dkhate"] = pd.DataFrame({"text": ["en dansk tekst"]})
+    background._build_or_load(id_test, 24, 6, check=False)
+    assert len(list(tmp_path.glob("*.parquet"))) == 1
+
+
+def test_build_cache_survives_interrupted_writes_and_corrupt_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = pools(10)
+    monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(background, "_candidates", lambda source, limit, seed: base[source])
+    monkeypatch.setattr(DataLoader, "load_ood_test_dataset", staticmethod(dict))
+    id_test = pd.DataFrame({"text": ["an unrelated test question"]})
+    to_parquet = pd.DataFrame.to_parquet
+
+    def interrupted(self: pd.DataFrame, path: Path, **kwargs: object) -> None:
+        Path(path).write_bytes(b"PAR1 partial")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        background._build_or_load(id_test, 24, 6, check=False)
+    assert not list(tmp_path.glob("*.parquet")) and not list(tmp_path.glob(".*.tmp"))
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", to_parquet)
+    expected = background._build_or_load(id_test, 24, 6, check=False)
+    (cache,) = tmp_path.glob("*.parquet")
+    cache.write_bytes(b"PAR1 truncated")  # e.g. a file left by an older version
+    with pytest.warns(UserWarning, match="unreadable background cache"):
+        rebuilt = background._build_or_load(id_test, 24, 6, check=False)
+    assert all(a.equals(b) for a, b in zip(rebuilt, expected, strict=True))
+    assert background._build_or_load(id_test, 24, 6, check=False)[0].equals(expected[0])
+
+
 def test_select_background_is_balanced_sized_and_order_invariant() -> None:
     a = pools(30)
     b = {name: list(reversed(pool)) for name, pool in a.items()}

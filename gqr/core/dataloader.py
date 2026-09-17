@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 from datasets import concatenate_datasets, load_dataset
 from sklearn.model_selection import train_test_split
@@ -210,16 +212,14 @@ class DataLoader:
             dkhate = dkhate.dropna(subset=["text"])
             dkhate = dkhate[dkhate["text"].str.strip() != ""]
         except Exception as e:
-            instructions = [
-                "Cannot load dkhate dataset. Skipping it.",
-                "Error details:" "```" f"{str(e)}",
-                "```",
-                "Please check if you are logged in to Hugging Face Hub.",
-                "You can do this by running `huggingface-cli login` in your terminal.",
-                "Ensure you have access to the dataset: https://huggingface.co/datasets/DDSC/dkhate",
-            ]
-            for instruction in instructions:
-                print(instruction)
+            warnings.warn(
+                "Cannot load the gated OOD test set DDSC/dkhate, so it is skipped. "
+                "Log in to the Hugging Face Hub (`hf auth login`, or "
+                "`huggingface-cli login` on older versions, or set HF_TOKEN) and "
+                "accept the dataset terms at https://huggingface.co/datasets/DDSC/dkhate. "
+                f"Error: {e}",
+                stacklevel=2,
+            )
             dkhate = pd.DataFrame(columns=["text", "label", "domain"])
 
         splits = {
