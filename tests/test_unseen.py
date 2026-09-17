@@ -16,6 +16,7 @@ from gqr.core.unseen import (
     UNSEEN_ID_SETS,
     is_finance_question,
     legal_qa_question,
+    reddit_post,
     select_unseen,
     unseen_scores,
 )
@@ -126,3 +127,30 @@ def test_source_specific_cleaning() -> None:
     assert not is_finance_question("What are the primary pillars of FedEx's community engagement program?")
     assert legal_qa_question("Q: Can I sue the hospital for negligence?") == "Can I sue the hospital for negligence?"
     assert legal_qa_question("Three Features of a Kangaroo Court") is None
+
+
+def test_reddit_post_unescapes_and_drops_scheduled_threads() -> None:
+    assert reddit_post("Rent &amp;amp; deposit", "Landlord said &amp;gt;30 days&amp;amp;#x200B;") == (
+        "Rent & deposit\nLandlord said >30 days"
+    )
+    assert reddit_post("Evicted without notice", None) == "Evicted without notice"
+    for title in (
+        "Daily General Discussion - November 10, 2017",
+        "Premarket Thread for General Trading and Plans for Friday, April 30, 2021",
+        "GME Megathread for March 04, 2021",
+        "Weekend Thread for General Discussion and Plans for Saturday",
+    ):
+        assert reddit_post(title, "body") is None
+    for title in ("21 year old with 5k to invest - any advice welcomed", "The biggest mistake, repeated daily"):
+        assert reddit_post(title, "body") is not None
+
+
+def test_cached_build_is_checked_against_the_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gqr.core import unseen
+
+    monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(unseen, "EXPECTED_SHA256", "0" * 64)
+    cached = pd.DataFrame({"text": ["a cached query here"], "label": [0], "domain": ["law"], "dataset": ["legal_reddit"]})
+    cached.to_parquet(tmp_path / f"{unseen.BUILD_ID}_seed42_per1000.parquet", index=False)
+    with pytest.warns(UserWarning, match="differs from the reference"):
+        unseen.load_unseen_id_test_dataset()

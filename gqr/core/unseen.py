@@ -8,6 +8,7 @@ seven OOD test sets:
 
 * finance: banking77 customer queries, financial-qa-10K questions about annual
   reports (finance-keyword questions only), finance and investing Reddit posts
+  (scheduled discussion threads removed)
 * healthcare: iCliniq patient questions, MedQuAD definitional questions, medical
   flashcards
 * law: r/legaladvice posts, legal-qa-v1 user questions, MMLU professional-law
@@ -30,6 +31,7 @@ parquet under ``$GQR_CACHE_DIR`` (default ``~/.cache/gqr``).
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import warnings
@@ -49,7 +51,7 @@ from .background import (
 )
 from .dataloader import SEED, DataLoader, domain2label, load_ood_test_dataset
 
-BUILD_ID = "unseen-id-audited"
+BUILD_ID = "unseen-id-audited-unescaped"
 PER_SET = 1_000
 MIN_WORDS = 3
 MAX_CHARS = 4_000
@@ -85,6 +87,34 @@ def is_finance_question(text: str) -> bool:
     return bool(_FINANCE_RE.search(str(text)))
 
 
+_BOT_THREAD_RE = re.compile(
+    r"\b(daily|weekly|weekend)\b.*\b(discussion|thread)\b"
+    r"|\b(premarket|pre-market|market open|after ?hours)\b.*\bthread\b"
+    r"|\bmegathread\b|\bdaily stonk\b",
+    re.IGNORECASE,
+)
+_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
+
+
+def reddit_post(title: str, body: str | None) -> str | None:
+    """Title and body of a Reddit post as a query, or None for a scheduled discussion thread.
+
+    Reddit dumps store HTML-escaped text, sometimes escaped twice ("&amp;amp;#x200B;"); the
+    entities and zero-width characters are removed so that markup noise no other set has does
+    not affect routing. Bot-posted daily / premarket / megathreads are not user queries.
+    """
+    title = str(title or "")
+    if _BOT_THREAD_RE.search(title):
+        return None
+    text = f"{title}\n{body or ''}"
+    for _ in range(3):  # double-escaped entities need more than one pass
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    return _ZERO_WIDTH_RE.sub("", text).strip()
+
+
 def legal_qa_question(text: str) -> str | None:
     """legal-qa-v1 mixes user questions ("Q: ...") with article titles; keep the questions and
     drop the "Q:" marker, which would identify the source."""
@@ -92,9 +122,7 @@ def legal_qa_question(text: str) -> str | None:
     return text[2:].strip() if text.startswith("Q:") else None
 
 # sha256 over the texts of the default build (set order of UNSEEN_ID_SETS, then hash order).
-EXPECTED_SHA256: str | None = (
-    "d7b5094919e44bae545293742dbcd049eddaf0a61fc500d825b35593cacf6584"
-)
+EXPECTED_SHA256: str | None = None
 
 
 def _texts(name: str) -> Iterable[str]:
@@ -105,9 +133,9 @@ def _texts(name: str) -> Iterable[str]:
     ds = load_dataset(repo, config, split=split, revision=revision)
     if name == "reddit_finance":
         ds = ds.select(range(min(REDDIT_FINANCE_ROWS, len(ds))))
-        return (f"{r['title']}\n{r['selftext'] or ''}" for r in ds)
+        return (t for t in (reddit_post(r["title"], r["selftext"]) for r in ds) if t)
     if name == "legal_reddit":
-        return (f"{r['title']}\n{r['body']}" for r in ds)
+        return (t for t in (reddit_post(r["title"], r["body"]) for r in ds) if t)
     if name == "financial_qa_10k":
         return (q for q in ds["question"] if is_finance_question(q))
     if name == "legal_qa_v1":
@@ -199,6 +227,19 @@ def _seen_index() -> tuple[OverlapIndex, list[str]]:
     return index, missing
 
 
+def _check_reference(df: pd.DataFrame, seed: int, per_set: int) -> str:
+    """Fingerprint of the sets; warns (on every load, cached or not) if a default build is not
+    the reference one, for example because an upstream dataset changed."""
+    digest = fingerprint(df["text"])
+    if seed == SEED and per_set == PER_SET and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
+        warnings.warn(
+            f"GQR-unseen fingerprint {digest[:12]} differs from the reference "
+            f"{EXPECTED_SHA256[:12]}; an upstream dataset has changed.",
+            stacklevel=3,
+        )
+    return digest
+
+
 def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.DataFrame:
     """Unseen in-domain test sets, built and cached on first use.
 
@@ -210,6 +251,7 @@ def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.
             df = pd.read_parquet(cache)
             if df.empty or not {"text", "label", "domain", "dataset"} <= set(df.columns):
                 raise ValueError("expected text, label, domain and dataset columns")
+            _check_reference(df, seed, per_set)
             return df
         except Exception as e:
             warnings.warn(f"Ignoring unreadable GQR-unseen cache {cache} ({e}); rebuilding.", stacklevel=2)
@@ -227,13 +269,7 @@ def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.
             stacklevel=2,
         )
         return df
-    digest = fingerprint(df["text"])
-    if seed == SEED and per_set == PER_SET and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
-        warnings.warn(
-            f"GQR-unseen fingerprint {digest[:12]} differs from the reference "
-            f"{EXPECTED_SHA256[:12]}; an upstream dataset has changed.",
-            stacklevel=2,
-        )
+    digest = _check_reference(df, seed, per_set)
     stats_json = json.dumps({"sha256": digest, "rows": len(df), "sets": stats}, indent=2)
     _atomic_write(cache.with_suffix(".stats.json"), lambda path: path.write_text(stats_json))
     _atomic_write(cache, lambda path: df.to_parquet(path, index=False))
