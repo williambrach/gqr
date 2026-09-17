@@ -122,7 +122,9 @@ def legal_qa_question(text: str) -> str | None:
     return text[2:].strip() if text.startswith("Q:") else None
 
 # sha256 over the texts of the default build (set order of UNSEEN_ID_SETS, then hash order).
-EXPECTED_SHA256: str | None = None
+EXPECTED_SHA256: str | None = (
+    "5f39d979b3c6d3a90d44af2f51176ede1431ef0c9bb0d5322525e5d4881e2c13"
+)
 
 
 def _texts(name: str) -> Iterable[str]:
