@@ -92,7 +92,9 @@ YAHOO_OOD_TOPICS = (5, 7)  # Sports, Entertainment & Music (the v2 background us
 AG_NEWS_OOD_LABELS = (0, 1)  # World, Sports (Business and Sci/Tech overlap the domains)
 
 # sha256 over the texts of the default build (set order of UNSEEN_SETS, then hash order).
-EXPECTED_SHA256: str | None = None
+EXPECTED_SHA256: str | None = (
+    "ac18d3b171bbec79dc9c886fa2003803cd33fc21523c0abb38a27950efea6dc8"
+)
 
 
 def _texts(name: str) -> Iterable[str]:
