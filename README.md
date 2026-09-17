@@ -65,16 +65,18 @@ versions, and a fingerprint check warns if an upstream corpus ever changes.
 The first call builds the corpus (one streamed pass over each source) and caches it
 under `$GQR_CACHE_DIR` (default `~/.cache/gqr`), with per-source filter statistics.
 
-## GQR-unseen: generalization to new sources
+## GQR-unseen: generalization to new in-domain sources
 
 The GQR-Bench ID test set comes from the same three sources as the training data, so
 ID accuracy there can reward learning how those sources are *written* rather than what
-they are *about*. GQR-unseen adds test sets from sources that GQR-Bench never uses:
+they are *about*. GQR-unseen adds nine in-domain test sets from sources GQR-Bench never
+uses, three per domain, and pairs them with the existing OOD test sets:
 
-| part | label | sets |
-|---|---|---|
-| unseen ID (route to the right domain) | 0 / 1 / 2 | finance: `banking77`, `financial_qa_10k`, `reddit_finance` · healthcare: `icliniq`, `medquad`, `med_flashcards` · law: `legal_reddit`, `legal_qa_v1`, `legal_qa_ib` |
-| unseen OOD (reject) | 3 | `trec`, `agnews_world_sports`, `rotten_tomatoes`, `codealpaca`, `gsm8k`, `yahoo_sports_entertainment`, `tweets` |
+| domain | sets |
+|---|---|
+| finance | `banking77`, `financial_qa_10k`, `reddit_finance` |
+| healthcare | `icliniq`, `medquad`, `med_flashcards` |
+| law | `legal_reddit`, `legal_qa_v1`, `legal_qa_ib` |
 
 Every dataset is pinned to a commit revision. Each text must pass a leakage screen (no
 exact or 8-word-shingle overlap with GQR-Bench train, eval, ID test, OOD test, or the v2
@@ -84,16 +86,15 @@ with the smallest seeded content hash, so the build is identical across machines
 ```python
 import gqr
 
-unseen_id = gqr.load_unseen_id_test_dataset()    # text, label, domain, dataset
-unseen_ood = gqr.load_unseen_ood_test_dataset()
+unseen_id = gqr.load_unseen_id_test_dataset()  # text, label (0/1/2), domain, dataset
 
 scores = gqr.score_unseen_batch(batch_model_fn)  # or gqr.score_unseen(model_fn)
-# {"id_accuracy", "ood_accuracy", "gqr_unseen_score", "per_dataset"}
+# {"unseen_id_accuracy", "ood_accuracy", "gqr_unseen_score", ...per-dataset breakdowns}
 ```
 
-The **GQR-unseen score** is the harmonic mean of unseen ID accuracy and unseen OOD
-accuracy (the same formula as the GQR score), with both parts macro-averaged over sets
-so every source weighs the same. Report it next to the GQR score: a large gap means a
+The **GQR-unseen score** is the harmonic mean of unseen ID accuracy (macro-averaged over
+the nine sets, so every source weighs the same) and OOD accuracy on the existing GQR-Bench
+OOD test sets (as in the GQR score). Report it next to the GQR score: a large gap means a
 router fits the benchmark's sources rather than its domains. The existing test sets are
 unchanged.
 

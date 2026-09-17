@@ -13,9 +13,7 @@ from .core.dataloader import (
 )
 from .core.evaluator import evaluate, evaluate_by_dataset
 from .core.unseen import (
-    load_unseen_dataset,
     load_unseen_id_test_dataset,
-    load_unseen_ood_test_dataset,
     score_unseen,
     score_unseen_batch,
     unseen_scores,
