@@ -8,6 +8,25 @@ A benchmark and evaluation toolkit for developing and testing guarded query rout
 pip install gqr
 ```
 
+## Versions
+
+| Version | Evaluation suites | Training data |
+|---|---|---|
+| **1.0.0** | original: ID test + 7 OOD test sets (`score`, `score_batch`) | `load_train_dataset(version="v1")` (three ID domains, default) and `version="v2"` (+ background class) |
+| **2.0.0** | 1.0.0 **plus GQR-unseen**: nine unseen in-domain test sets scored with the same OOD test sets (`score_unseen`, `score_unseen_batch`) | unchanged |
+
+The original ID and OOD test sets are identical in both, so GQR scores stay comparable across
+versions. To stay on the original benchmark, install the latest 1.x:
+
+```bash
+pip install "gqr<2"          # latest 1.x, original evaluation suite
+pip install gqr              # latest, adds the GQR-unseen suite
+```
+
+The ECAI 2025 paper and the [leaderboard](https://gqr-bench.github.io/) report the original
+evaluation suite (released as `gqr==0.0.5`, now the 1.x line). Results from different versions
+should state which evaluation suite and which training data they used.
+
 ## Quick Start
 
 ```python
