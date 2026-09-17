@@ -276,24 +276,21 @@ def _cache_dir() -> Path:
 
 
 def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
-    """Write to a temporary file next to ``path``, then rename it into place.
+    """Write on the same filesystem as ``path``, then rename into place.
 
     An interrupted or concurrent build never leaves a partial file at ``path``.
     The file gets the permissions a plain write would give it, so a shared
     ``$GQR_CACHE_DIR`` stays readable by other users.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    os.close(fd)
-    tmp = Path(name)
-    try:
-        umask = os.umask(0)
-        os.umask(umask)
-        tmp.chmod(0o666 & ~umask)  # mkstemp creates the file as 0600
+    # A private directory lets the writer create a new file with normal
+    # permissions without reading or changing the process-wide umask.
+    with tempfile.TemporaryDirectory(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    ) as directory:
+        tmp = Path(directory) / path.name
         write(tmp)
         os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def _read_cache(cache: Path, n_rows: int) -> pd.DataFrame | None:

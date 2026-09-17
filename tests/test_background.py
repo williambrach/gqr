@@ -6,7 +6,9 @@ Run: uv run --with pytest pytest tests
 import os
 import random
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pandas as pd
 import pytest
@@ -157,21 +159,67 @@ def test_build_cache_survives_interrupted_writes_and_corrupt_files(
     assert background._build_or_load(id_test, 24, 6, check=False)[0].equals(expected[0])
 
 
+@pytest.mark.parametrize("mask", [0o022, 0o077])
 def test_build_cache_files_get_default_permissions(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mask: int
 ) -> None:
     base = pools(10)
     monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(background, "_candidates", lambda source, limit, seed: base[source])
     monkeypatch.setattr(DataLoader, "load_ood_test_dataset", staticmethod(dict))
-    previous = os.umask(0o022)
+    previous = os.umask(mask)
     try:
         background._build_or_load(pd.DataFrame({"text": ["an unrelated test question"]}), 24, 6, check=False)
     finally:
         os.umask(previous)
     files = list(tmp_path.iterdir())
     assert len(files) == 2
-    assert all(stat.S_IMODE(f.stat().st_mode) == 0o644 for f in files)
+    assert all(stat.S_IMODE(f.stat().st_mode) == 0o666 & ~mask for f in files)
+
+
+def test_atomic_write_preserves_other_threads_file_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = tmp_path / "cache.json"
+    unrelated = tmp_path / "private.txt"
+    create_unrelated = Event()
+    real_umask = os.umask
+
+    def write_unrelated() -> None:
+        assert create_unrelated.wait(timeout=5)
+        unrelated.write_text("private application data")
+
+    previous = real_umask(0o077)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            other_write = executor.submit(write_unrelated)
+
+            def interleave_umask(mask: int) -> int:
+                old = real_umask(mask)
+                if mask == 0:
+                    # Let the other thread create its file while permissions
+                    # are relaxed, making the former race deterministic.
+                    create_unrelated.set()
+                    other_write.result(timeout=5)
+                return old
+
+            monkeypatch.setattr(background.os, "umask", interleave_umask)
+
+            def write_cache(path: Path) -> None:
+                create_unrelated.set()
+                other_write.result(timeout=5)
+                path.write_text("complete cache")
+
+            background._atomic_write(cache, write_cache)
+        assert real_umask(0o077) == 0o077
+    finally:
+        create_unrelated.set()
+        real_umask(previous)
+
+    assert cache.read_text() == "complete cache"
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o600
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o600
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cache.json", "private.txt"]
 
 
 def test_detokenize_wikitext_removes_tokenization_artifacts() -> None:
