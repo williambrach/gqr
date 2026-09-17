@@ -16,16 +16,18 @@ pip install gqr
 | **2.0.0** | 1.0.0 **plus GQR-unseen**: nine unseen in-domain test sets scored with the same OOD test sets (`score_unseen`, `score_unseen_batch`) | unchanged |
 
 The original ID and OOD test sets are identical in both, so GQR scores stay comparable across
-versions. To stay on the original benchmark, install the latest 1.x:
+versions.
 
 ```bash
-pip install "gqr<2"          # latest 1.x, original evaluation suite
-pip install gqr              # latest, adds the GQR-unseen suite
+pip install "git+https://github.com/williambrach/gqr@v1.0.0"    # 1.0.0, original suite
+pip install "git+https://github.com/williambrach/gqr@gqr-unseen" # 2.0.0, adds GQR-unseen
 ```
 
-The ECAI 2025 paper and the [leaderboard](https://gqr-bench.github.io/) report the original
-evaluation suite (released as `gqr==0.0.5`, now the 1.x line). Results from different versions
-should state which evaluation suite and which training data they used.
+Once the releases are on PyPI, `pip install "gqr<2"` will pin the 1.x line and `pip install gqr`
+will give the latest. The newest version currently published on PyPI is `0.0.5`, the code used for
+the ECAI 2025 paper and the [leaderboard](https://gqr-bench.github.io/), which report the original
+evaluation suite. Results from different versions should state which evaluation suite and which
+training data they used.
 
 ## Quick Start
 
