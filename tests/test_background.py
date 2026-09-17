@@ -3,7 +3,9 @@
 Run: uv run --with pytest pytest tests
 """
 
+import os
 import random
+import stat
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +14,7 @@ import pytest
 from gqr.core import background
 from gqr.core.background import (
     OverlapIndex,
+    detokenize_wikitext,
     fingerprint,
     id_topic_hit,
     normalize,
@@ -152,6 +155,36 @@ def test_build_cache_survives_interrupted_writes_and_corrupt_files(
         rebuilt = background._build_or_load(id_test, 24, 6, check=False)
     assert all(a.equals(b) for a, b in zip(rebuilt, expected, strict=True))
     assert background._build_or_load(id_test, 24, 6, check=False)[0].equals(expected[0])
+
+
+def test_build_cache_files_get_default_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = pools(10)
+    monkeypatch.setenv("GQR_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(background, "_candidates", lambda source, limit, seed: base[source])
+    monkeypatch.setattr(DataLoader, "load_ood_test_dataset", staticmethod(dict))
+    previous = os.umask(0o022)
+    try:
+        background._build_or_load(pd.DataFrame({"text": ["an unrelated test question"]}), 24, 6, check=False)
+    finally:
+        os.umask(previous)
+    files = list(tmp_path.iterdir())
+    assert len(files) == 2
+    assert all(stat.S_IMODE(f.stat().st_mode) == 0o644 for f in files)
+
+
+def test_detokenize_wikitext_removes_tokenization_artifacts() -> None:
+    raw = (
+        ' " Finn the Human " is the b @-@ side of CryoSat @-@ 2 ( 2012 ) , '
+        "costing $ 1 @,@ 000 or 3 @.@ 5 % of Tanzler 's budget ; it didn 't sell ... "
+    )
+    text = detokenize_wikitext(raw)
+    assert text == (
+        '"Finn the Human" is the b-side of CryoSat-2 (2012), '
+        "costing $1,000 or 3.5% of Tanzler's budget; it didn't sell..."
+    )
+    assert normalize(text) == normalize(raw)
 
 
 def test_select_background_is_balanced_sized_and_order_invariant() -> None:

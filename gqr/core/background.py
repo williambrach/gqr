@@ -6,7 +6,8 @@ example by thresholding confidence). v2 adds a fourth *background* class
 (label 3, domain "ood") to the train and eval splits. It is built only from
 general-purpose corpora, at pinned revisions, that no GQR-Bench test set uses:
 
-* wikitext-103 prose (``Salesforce/wikitext``, ``wikitext-103-raw-v1``, train)
+* wikitext-103 prose (``Salesforce/wikitext``, ``wikitext-103-raw-v1``, train),
+  detokenized so its ``@-@`` markers and padded punctuation do not give it away
 * dolly-15k instructions (``databricks/databricks-dolly-15k``, train)
 * Yahoo Answers questions from topics outside the three domains
   (``community-datasets/yahoo_answers_topics``, train; Society & Culture,
@@ -51,7 +52,7 @@ from .dataloader import SEED, DataLoader, domain2label
 
 BACKGROUND_DOMAIN = "ood"
 BACKGROUND_LABEL = domain2label[BACKGROUND_DOMAIN]
-BUILD_ID = "v2-hashrank-dedup"
+BUILD_ID = "v2-hashrank-dedup-detok"
 SOURCES = {
     "wikitext": ("Salesforce/wikitext", "wikitext-103-raw-v1",
                  "b08601e04326c79dfdd32d625aee71d232d685c3"),
@@ -71,7 +72,7 @@ OVERSAMPLE = 1.25
 # A mismatch means an upstream corpus changed and the build is not the
 # reference GQR-Bench v2 background.
 EXPECTED_SHA256: str | None = (
-    "bd419e53a1a9dd70e54c1fa616e5d39ccc78f95acda078cf7e5a7068bd8c302b"
+    "f4f76f57fe34649e2ad97c9374bb04a4ae157eb2826bb14e5df381a570ad8102"
 )
 
 ID_TOPIC_PATTERNS = {
@@ -94,6 +95,29 @@ def id_topic_hit(text: str) -> str | None:
 
 def normalize(text: str) -> str:
     return _WS.sub(" ", _PUNCT.sub(" ", str(text).lower())).strip()
+
+
+_WIKITEXT_DETOKENIZE = (
+    (re.compile(r" @(\S)@ "), r"\1"),  # "b @-@ side", "1 @,@ 000", "3 @.@ 5"
+    (re.compile(r'"\s*([^"]*?)\s*"'), r'"\1"'),  # '" Finn the Human "'
+    (re.compile(r"([(\[$#]) "), r"\1"),
+    (re.compile(r" (\.\.\.|[.,;:!?%)\]]|'(?:s|t|re|ve|ll|d|m)\b)"), r"\1"),  # "it 's", "don 't"
+    (_WS, " "),
+)
+
+
+def detokenize_wikitext(text: str) -> str:
+    """Undo wikitext-103's Moses-style tokenization.
+
+    Raw wikitext splits hyphens and number separators into ``@-@``, ``@,@`` and
+    ``@.@`` and pads punctuation with spaces, which no GQR-Bench query does. Left
+    in, these artifacts would let a router recognize a background passage by its
+    formatting instead of its content. The normalized text is unaffected.
+    """
+    text = str(text)
+    for pattern, replacement in _WIKITEXT_DETOKENIZE:
+        text = pattern.sub(replacement, text)
+    return text.strip()
 
 
 def shingles(text: str, k: int = SHINGLE_WORDS) -> set[str]:
@@ -233,7 +257,7 @@ def _candidates(source: str, limit: int, seed: int) -> list[str]:
     rows = _stream(source)
     if source == "wikitext":
         texts = (
-            r["text"].strip() for r in rows
+            detokenize_wikitext(r["text"]) for r in rows
             if len(r["text"].strip()) >= MIN_CHARS and not r["text"].strip().startswith("=")
         )
     elif source == "dolly":
@@ -255,12 +279,17 @@ def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
     """Write to a temporary file next to ``path``, then rename it into place.
 
     An interrupted or concurrent build never leaves a partial file at ``path``.
+    The file gets the permissions a plain write would give it, so a shared
+    ``$GQR_CACHE_DIR`` stays readable by other users.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     os.close(fd)
     tmp = Path(name)
     try:
+        umask = os.umask(0)
+        os.umask(umask)
+        tmp.chmod(0o666 & ~umask)  # mkstemp creates the file as 0600
         write(tmp)
         os.replace(tmp, path)
     finally:
