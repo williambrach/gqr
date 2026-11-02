@@ -134,14 +134,18 @@ def _texts(name: str) -> Iterable[str]:
     _, repo, config, split, revision = UNSEEN_ID_SETS[name]
     ds = load_dataset(repo, config, split=split, revision=revision)
     if name == "reddit_finance":
-        ds = ds.select(range(min(REDDIT_FINANCE_ROWS, len(ds))))
-        return (t for t in (reddit_post(r["title"], r["selftext"]) for r in ds) if t)
+        row_limit = min(REDDIT_FINANCE_ROWS, len(ds))
+        first_rows = ds.select(range(row_limit))
+        posts = (reddit_post(row["title"], row["selftext"]) for row in first_rows)
+        return (post for post in posts if post)
     if name == "legal_reddit":
-        return (t for t in (reddit_post(r["title"], r["body"]) for r in ds) if t)
+        posts = (reddit_post(row["title"], row["body"]) for row in ds)
+        return (post for post in posts if post)
     if name == "financial_qa_10k":
         return (q for q in ds["question"] if is_finance_question(q))
     if name == "legal_qa_v1":
-        return (q for q in map(legal_qa_question, ds["question"]) if q)
+        questions = map(legal_qa_question, ds["question"])
+        return (question for question in questions if question)
     column = {
         "banking77": "text",
         "icliniq": "input",
@@ -170,44 +174,46 @@ def select_unseen(
     for name, (domain, *_) in UNSEEN_ID_SETS.items():
         if name not in raw:
             continue
-        s = {"raw": 0, "too_short": 0, "duplicate": 0, "gqr_overlap": 0}
+        counts = {"raw": 0, "too_short": 0, "duplicate": 0, "gqr_overlap": 0}
         candidates: dict[str, str] = {}
         leaked: set[str] = set()
         for text in raw[name]:
-            s["raw"] += 1
+            counts["raw"] += 1
             text = str(text or "").strip()[:MAX_CHARS]
             norm = normalize(text)
             if len(norm.split()) < MIN_WORDS:
-                s["too_short"] += 1
+                counts["too_short"] += 1
                 continue
             if norm in candidates or norm in leaked or norm in claimed:
-                s["duplicate"] += 1
+                counts["duplicate"] += 1
                 if norm in candidates:
                     # spellings that normalize identically: keep the lexicographically smallest,
                     # so the emitted query does not depend on row order
                     candidates[norm] = min(candidates[norm], text)
                 continue
             if seen.hit(text):  # overlap is decided on normalized text, so any spelling gives the same answer
-                s["gqr_overlap"] += 1
+                counts["gqr_overlap"] += 1
                 leaked.add(norm)
                 continue
             candidates[norm] = text
-        ranked = sorted(candidates, key=lambda n: rank_key(n, seed, f"unseen:{name}"))[:per_set]
+        rank_salt = f"unseen:{name}"
+        by_rank = sorted(candidates, key=lambda n: rank_key(n, seed, rank_salt))
+        ranked = by_rank[:per_set]
         claimed.update(ranked)
-        s["used"] = len(ranked)
-        stats[name] = s
-        frames.append(
-            pd.DataFrame(
-                {
-                    "text": [candidates[n] for n in ranked],
-                    "label": domain2label[domain],
-                    "domain": domain,
-                    "dataset": name,
-                }
-            )
+        counts["used"] = len(ranked)
+        stats[name] = counts
+        frame = pd.DataFrame(
+            {
+                "text": [candidates[n] for n in ranked],
+                "label": domain2label[domain],
+                "domain": domain,
+                "dataset": name,
+            }
         )
+        frames.append(frame)
     columns = ["text", "label", "domain", "dataset"]
-    return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)), stats
+    rows = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+    return rows, stats
 
 
 def _seen_index() -> tuple[OverlapIndex, list[str]]:
@@ -233,7 +239,8 @@ def _check_reference(df: pd.DataFrame, seed: int, per_set: int) -> str:
     """Fingerprint of the sets; warns (on every load, cached or not) if a default build is not
     the reference one, for example because an upstream dataset changed."""
     digest = fingerprint(df["text"])
-    if seed == SEED and per_set == PER_SET and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
+    is_default_build = seed == SEED and per_set == PER_SET
+    if is_default_build and EXPECTED_SHA256 and digest != EXPECTED_SHA256:
         warnings.warn(
             f"GQR-unseen fingerprint {digest[:12]} differs from the reference "
             f"{EXPECTED_SHA256[:12]}; an upstream dataset has changed.",
@@ -251,7 +258,8 @@ def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.
     if cache.exists():
         try:
             df = pd.read_parquet(cache)
-            if df.empty or not {"text", "label", "domain", "dataset"} <= set(df.columns):
+            required_columns = {"text", "label", "domain", "dataset"}
+            if df.empty or not required_columns <= set(df.columns):
                 raise ValueError("expected text, label, domain and dataset columns")
             _check_reference(df, seed, per_set)
             return df
@@ -272,8 +280,10 @@ def load_unseen_id_test_dataset(seed: int = SEED, per_set: int = PER_SET) -> pd.
         )
         return df
     digest = _check_reference(df, seed, per_set)
-    stats_json = json.dumps({"sha256": digest, "rows": len(df), "sets": stats}, indent=2)
-    _atomic_write(cache.with_suffix(".stats.json"), lambda path: path.write_text(stats_json))
+    build_summary = {"sha256": digest, "rows": len(df), "sets": stats}
+    stats_json = json.dumps(build_summary, indent=2)
+    stats_path = cache.with_suffix(".stats.json")
+    _atomic_write(stats_path, lambda path: path.write_text(stats_json))
     _atomic_write(cache, lambda path: df.to_parquet(path, index=False))
     return df
 
@@ -287,16 +297,21 @@ def unseen_scores(
     """
 
     def per_dataset(frame: pd.DataFrame) -> pd.Series:
-        correct = frame[pred_col].astype(int) == frame["label"].astype(int)
+        predictions = frame[pred_col].astype(int)
+        labels = frame["label"].astype(int)
+        correct = predictions == labels
         return correct.groupby(frame["dataset"]).mean()
 
-    id_sets, ood_sets = per_dataset(unseen_id), per_dataset(ood)
-    id_accuracy, ood_accuracy = float(id_sets.mean()), float(ood_sets.mean())
+    id_sets = per_dataset(unseen_id)
+    ood_sets = per_dataset(ood)
+    id_accuracy = float(id_sets.mean())
+    ood_accuracy = float(ood_sets.mean())
     total = id_accuracy + ood_accuracy
+    gqr_unseen_score = 2 * id_accuracy * ood_accuracy / total if total > 0 else 0.0
     return {
         "unseen_id_accuracy": id_accuracy,
         "ood_accuracy": ood_accuracy,
-        "gqr_unseen_score": 2 * id_accuracy * ood_accuracy / total if total > 0 else 0.0,
+        "gqr_unseen_score": gqr_unseen_score,
         "unseen_id_per_dataset": {name: float(acc) for name, acc in id_sets.items()},
         "ood_per_dataset": {name: float(acc) for name, acc in ood_sets.items()},
     }
@@ -312,13 +327,13 @@ def score_unseen_batch(
         print(f"[GQR-unseen] Running model on {len(texts)} {name} texts in batches of {batch_size}...")
         predictions: list[int] = []
         for i in range(0, len(texts), batch_size):
-            predictions.extend(model_fn(texts[i : i + batch_size]))
+            batch = texts[i : i + batch_size]
+            predictions.extend(model_fn(batch))
         return frame.assign(predictions=predictions)
 
-    scores = unseen_scores(
-        predict(load_unseen_id_test_dataset(), "unseen ID"),
-        predict(load_ood_test_dataset(), "OOD test"),
-    )
+    unseen_id = predict(load_unseen_id_test_dataset(), "unseen ID")
+    ood = predict(load_ood_test_dataset(), "OOD test")
+    scores = unseen_scores(unseen_id, ood)
     summary = {k: v for k, v in scores.items() if not k.endswith("per_dataset")}
     print(f"[GQR-unseen] Final scores: {summary}")
     return scores
